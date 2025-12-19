@@ -1,0 +1,6 @@
+{
+  "debug.allowBreakpointsEverywhere": false,
+  "debug.openDebug": "neverOpen",
+  "editor.gutterClickBehavior": "none",
+  "typescript.tsdk": "node_modules\\typescript\\lib"
+}
