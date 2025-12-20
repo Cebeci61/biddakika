@@ -1,373 +1,866 @@
-// app/guest/package-requests/new/page.tsx
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import React, { FormEvent, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Protected } from "@/components/Protected";
 import { useAuth } from "@/context/AuthContext";
 import { getFirestoreDb } from "@/lib/firebase/client";
 import { addDoc, collection, serverTimestamp } from "firebase/firestore";
-import { useRouter } from "next/navigation";
 
-type IncludeKey = "hotel" | "transfer" | "tour" | "guide" | "insurance" | "car" | "rentalItem" | "extras";
+/* ====================== TYPES ====================== */
 
-type CarPolicyKey = "freeCancellation48h" | "instantApproval" | "creditCardDeposit";
+type TransferType = "none" | "oneway" | "roundtrip";
+type VehicleClass = "none" | "economy" | "sedan" | "suv" | "jeep" | "vip" | "minivan";
+type HotelPref = "any" | "cityCenter" | "sea" | "nature" | "boutique" | "luxury";
+type ResponseUnit = "minutes" | "hours" | "days";
 
-type CarRental = {
-  enabled: boolean;
-  policies: Partial<Record<CarPolicyKey, boolean>>;
-  driverAge?: number | null;
-  licenseYears?: number | null;
-  secondDriver?: boolean;
-  dailyKmLimit?: string; // "∞" | "200" | "300" vb.
-  fuelPolicy?: string;   // "Full to Full" vb.
-  afterHours?: boolean;
-  oneWay?: boolean;
-  youngDriverFee?: string;
+type RoomTypePref = "any" | "standard" | "family" | "suite" | "deluxe";
+type BoardPref = "any" | "RO" | "BB" | "HB" | "AI" | "UAI";
 
-  pickupCity?: string;
-  dropoffCity?: string;
-  pickupDate?: string; // YYYY-MM-DD
-  dropoffDate?: string;
-  pickupTime?: string; // HH:mm
-  dropoffTime?: string;
-  vehicleClass?: string; // "Auto" vb.
-};
+type PromoTone = "emerald" | "amber" | "pink" | "sky";
+type PromoGroup =
+  | "progress"
+  | "cities"
+  | "dates"
+  | "pax"
+  | "hotel"
+  | "tour"
+  | "car"
+  | "transfer"
+  | "flight"
+  | "budget"
+  | "notes"
+  | "deadline";
 
-type StayPlanItem = {
-  city?: string;
-  hotelPref?: string;
-  checkIn?: string;
-  checkOut?: string;
-  people?: number;
-  rooms?: number;
-  roomType?: string;
-  notes?: string;
-};
+/* ====================== SABİTLER ====================== */
 
-type RentalItem = {
-  name?: string;
-  date?: string;
-  time?: string;
-  returnDate?: string;
-  returnTime?: string;
-  days?: number;
-  qty?: number;
-  notes?: string;
-};
+const CITY_SUGGESTIONS = [
+  "İstanbul", "Antalya", "İzmir", "Ankara", "Trabzon", "Rize", "Muğla", "Bursa",
+  "Kapadokya", "Fethiye", "Bodrum", "Marmaris", "Alanya", "Kaş", "Uzungöl"
+];
 
-type TourItem = {
-  tourName?: string;
-  tourType?: "group" | "private";
-  date?: string;
-  time?: string;
-  people?: number;
-  notes?: string;
-};
+const ROOM_TYPE_PREFS: { key: RoomTypePref; label: string }[] = [
+  { key: "any", label: "Farketmez" },
+  { key: "standard", label: "Standart" },
+  { key: "family", label: "Aile odası" },
+  { key: "suite", label: "Suit" },
+  { key: "deluxe", label: "Deluxe" }
+];
 
-type TransferItem = {
-  direction?: "oneway" | "roundtrip";
-  from?: string;
-  to?: string;
-  date?: string;
-  time?: string;
-  notes?: string;
-};
+const BOARD_PREFS: { key: BoardPref; label: string }[] = [
+  { key: "any", label: "Farketmez" },
+  { key: "RO", label: "Sadece oda (RO)" },
+  { key: "BB", label: "Kahvaltı dahil (BB)" },
+  { key: "HB", label: "Yarım pansiyon (HB)" },
+  { key: "AI", label: "Her şey dahil (AI)" },
+  { key: "UAI", label: "Ultra her şey dahil (UAI)" }
+];
 
-type ExtraCard = {
-  key: string;
-  title: string;
-  priceHint?: number;
-};
+const VEHICLE_CLASS: { key: Exclude<VehicleClass, "none">; label: string }[] = [
+  { key: "economy", label: "Ekonomik" },
+  { key: "sedan", label: "Sedan" },
+  { key: "suv", label: "SUV" },
+  { key: "jeep", label: "Jeep" },
+  { key: "minivan", label: "Minivan (7+)" },
+  { key: "vip", label: "VIP" }
+];
 
-type ExtraSelected = {
-  key: string;
-  qty: number;
-  date?: string;
-  time?: string;
-  days?: number;
-  notes?: string;
-};
+const HOTEL_PREFS: { key: HotelPref; label: string }[] = [
+  { key: "any", label: "Farketmez" },
+  { key: "cityCenter", label: "Merkez" },
+  { key: "sea", label: "Deniz" },
+  { key: "nature", label: "Doğa" },
+  { key: "boutique", label: "Butik" },
+  { key: "luxury", label: "Lüks" }
+];
 
-function safeStr(v: any, fallback = "—") {
-  if (v === null || v === undefined) return fallback;
-  const s = String(v).trim();
-  return s.length ? s : fallback;
+/* ====================== HELPERS ====================== */
+
+function cleanText(v: any) {
+  return String(v ?? "").trim();
 }
-
+function digitsOnly(v: string) {
+  return v.replace(/\D/g, "");
+}
 function parseDate(value?: string | null): Date | null {
   if (!value) return null;
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
 }
-
+function normalized(d: Date) {
+  const n = new Date(d);
+  n.setHours(0, 0, 0, 0);
+  return n;
+}
+function diffInDays(a: Date, b: Date) {
+  const ms = normalized(a).getTime() - normalized(b).getTime();
+  return Math.floor(ms / 86400000);
+}
 function calcNights(from?: string, to?: string) {
   const a = parseDate(from);
   const b = parseDate(to);
   if (!a || !b) return 1;
-  a.setHours(0, 0, 0, 0);
-  b.setHours(0, 0, 0, 0);
-  const diff = Math.floor((b.getTime() - a.getTime()) / 86400000);
-  return diff > 0 ? diff : 1;
+  const d = diffInDays(b, a);
+  return d > 0 ? d : 1;
+}
+function toMinutes(amount: number, unit: ResponseUnit): number {
+  if (unit === "minutes") return amount;
+  if (unit === "hours") return amount * 60;
+  return amount * 60 * 24;
+}
+function responseUnitLabelTR(unit: ResponseUnit) {
+  if (unit === "minutes") return "dakika";
+  if (unit === "hours") return "saat";
+  return "gün";
 }
 
-function buildDateRange(from?: string, to?: string) {
-  const a = parseDate(from);
-  const b = parseDate(to);
-  if (!a || !b) return [];
-  a.setHours(0, 0, 0, 0);
-  b.setHours(0, 0, 0, 0);
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n));
+}
 
-  const days: string[] = [];
-  const cur = new Date(a);
-  let guard = 0;
-  while (cur.getTime() <= b.getTime() && guard < 120) {
-    days.push(cur.toISOString().slice(0, 10));
-    cur.setDate(cur.getDate() + 1);
-    guard++;
+/* ====================== PROMO ENGINE ====================== */
+
+type PromoItem = {
+  id: string;
+  group: PromoGroup;
+  tone: PromoTone;
+  icon: string;
+  title: string;
+  desc: string;
+};
+
+function toneCls(t: PromoTone) {
+  if (t === "emerald") return "border-emerald-400/30 bg-emerald-500/10 text-emerald-100";
+  if (t === "amber") return "border-amber-400/30 bg-amber-500/10 text-amber-100";
+  if (t === "pink") return "border-pink-400/30 bg-pink-500/10 text-pink-100";
+  return "border-sky-400/30 bg-sky-500/10 text-sky-100";
+}
+
+function hashSeed(input: string) {
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
   }
-  return days;
+  return Math.abs(h);
 }
-export default function GuestPackageRequestNewPage() {
-  const { profile } = useAuth() as any;
-  const db = getFirestoreDb();
-  const router = useRouter();
+function pick<T>(arr: T[], seed: number) {
+  return arr[seed % arr.length];
+}
 
-  // 1) Tarih seçimi (ana)
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+function buildPromos(args: {
+  tick: number;
+  progress: number;
+  cities: string[];
+  dateFrom: string;
+  dateTo: string;
+  nights: number;
+  paxAdults: number;
+  paxChildren: number;
+  roomsCount: number;
+  roomTypePref: RoomTypePref;
+  boardPref: BoardPref;
+  hotelPref: HotelPref;
+  wantTours: boolean;
+  toursCount: number;
+  wantCar: boolean;
+  carClass: VehicleClass;
+  licenseYear: number | null;
+  transferType: TransferType;
+  wantFlight: boolean;
+  budgetMin: number | null;
+  budgetMax: number | null;
+  notes: string;
+  responseAmount: number;
+  responseUnit: ResponseUnit;
+}) {
+  const seed = hashSeed(
+    [
+      String(args.tick),
+      String(args.progress),
+      args.cities.join("|"),
+      args.dateFrom,
+      args.dateTo,
+      String(args.nights),
+      String(args.paxAdults),
+      String(args.paxChildren),
+      String(args.roomsCount),
+      args.roomTypePref,
+      args.boardPref,
+      args.hotelPref,
+      String(args.wantTours),
+      String(args.toursCount),
+      String(args.wantCar),
+      args.carClass,
+      String(args.licenseYear ?? ""),
+      args.transferType,
+      String(args.wantFlight),
+      String(args.budgetMin ?? ""),
+      String(args.budgetMax ?? ""),
+      args.notes,
+      String(args.responseAmount),
+      args.responseUnit
+    ].join("::")
+  );
 
-  // 2) Paket başlık / şehir
-  const [title, setTitle] = useState("");
-  const [city, setCity] = useState("");
-  const [district, setDistrict] = useState("");
+  const agencies = 18 + (seed % 31);
+  const fastMin = 6 + (seed % 10);
 
-  // 3) Kişi
-  const [adults, setAdults] = useState(2);
-  const [childrenCount, setChildrenCount] = useState(0);
-  const [childrenAges, setChildrenAges] = useState<number[]>([]);
+  const out: PromoItem[] = [];
 
-  // 4) Araç (opsiyonel)
-  const [carRental, setCarRental] = useState<CarRental>({
-    enabled: false,
-    policies: { freeCancellation48h: true, instantApproval: true, creditCardDeposit: false },
-    driverAge: 26,
-    licenseYears: 3,
-    secondDriver: false,
-    dailyKmLimit: "∞",
-    fuelPolicy: "Full to Full",
-    afterHours: false,
-    oneWay: false,
-    youngDriverFee: "Auto",
-    pickupCity: "",
-    dropoffCity: "",
-    pickupDate: "",
-    dropoffDate: "",
-    pickupTime: "09:30",
-    dropoffTime: "17:30",
-    vehicleClass: "Auto"
-  });
-
-  // 5) Konaklama planı (çoklu)
-  const [stayDraft, setStayDraft] = useState<StayPlanItem>({
-    city: "",
-    hotelPref: "",
-    checkIn: "",
-    checkOut: "",
-    people: 2,
-    rooms: 1,
-    roomType: "Standart",
-    notes: ""
-  });
-  const [stays, setStays] = useState<StayPlanItem[]>([]);
-
-  // 6) Kiralık eşya (çoklu)
-  const [rentalDraft, setRentalDraft] = useState<RentalItem>({
-    name: "",
-    date: "",
-    time: "10:00",
-    returnDate: "",
-    returnTime: "10:00",
-    days: 1,
-    qty: 1,
-    notes: ""
-  });
-  const [rentalItems, setRentalItems] = useState<RentalItem[]>([]);
-
-  // 7) Tur (çoklu)
-  const [tourDraft, setTourDraft] = useState<TourItem>({
-    tourName: "",
-    tourType: "group",
-    date: "",
-    time: "10:00",
-    people: 2,
-    notes: ""
-  });
-  const [tours, setTours] = useState<TourItem[]>([]);
-
-  // 8) Transfer (çoklu)
-  const [transferDraft, setTransferDraft] = useState<TransferItem>({
-    direction: "oneway",
-    from: "",
-    to: "",
-    date: "",
-    time: "09:00",
-    notes: ""
-  });
-  const [transfers, setTransfers] = useState<TransferItem[]>([]);
-
-  // 9) Ekstralar (kart seçim)
-  const EXTRA_CARDS: ExtraCard[] = [
-    { key: "balloon", title: "Balon Turu", priceHint: 500 },
-    { key: "zipline", title: "Zipline", priceHint: 0 },
-    { key: "museum", title: "Müze Bileti", priceHint: 250 },
-    { key: "vipDinner", title: "Özel Akşam Yemeği", priceHint: 1500 }
-  ];
-  const [extraSelectedKeys, setExtraSelectedKeys] = useState<Record<string, boolean>>({});
-  const [extraDraftDate, setExtraDraftDate] = useState("");
-  const [extraDraftTime, setExtraDraftTime] = useState("10:00");
-  const [extraDraftDays, setExtraDraftDays] = useState(1);
-  const [extraDraftQty, setExtraDraftQty] = useState(1);
-  const [extras, setExtras] = useState<ExtraSelected[]>([]);
-
-  // 10) Genel not + bütçe
-  const [notes, setNotes] = useState("");
-  const [budgetMin, setBudgetMin] = useState("");
-  const [budgetMax, setBudgetMax] = useState("");
-  const [responseDeadlineMinutes, setResponseDeadlineMinutes] = useState(120);
-
-  // Takvim: hangi date inputa yazacağız?
-  const [activeDateField, setActiveDateField] = useState<string>(""); 
-  // örnek: "car.pickupDate" / "stayDraft.checkIn" / "tourDraft.date" / "extraDraftDate" vb.
-
-  const nights = useMemo(() => calcNights(dateFrom, dateTo), [dateFrom, dateTo]);
-  const totalGuests = useMemo(() => adults + childrenCount, [adults, childrenCount]);
-
-  const calendarDays = useMemo(() => buildDateRange(dateFrom, dateTo), [dateFrom, dateTo]);
-
-  function syncChildrenAges(nextCount: number) {
-    setChildrenCount(nextCount);
-    setChildrenAges((prev) => {
-      const copy = [...prev];
-      while (copy.length < nextCount) copy.push(7);
-      while (copy.length > nextCount) copy.pop();
-      return copy;
+  // PROGRESS
+  if (args.progress < 30) {
+    out.push({
+      id: "pr-1",
+      group: "progress",
+      tone: "sky",
+      icon: "🧩",
+      title: "Paket iskeleti kuruluyor",
+      desc: "Şehir + tarih + kişi netleşince acenta çok daha hızlı teklif verir."
+    });
+  } else if (args.progress < 60) {
+    out.push({
+      id: "pr-2",
+      group: "progress",
+      tone: "amber",
+      icon: "🔥",
+      title: "%50+ oldu… paket şekilleniyor",
+      desc: "Şu an doğru yoldasın. Birkaç detay daha gir → teklif kalitesi artar."
+    });
+  } else if (args.progress < 85) {
+    out.push({
+      id: "pr-3",
+      group: "progress",
+      tone: "emerald",
+      icon: "✅",
+      title: "Müthiş paket geliyor",
+      desc: "Şu an acentanın planlaması için yeterince net bir talep oluştu."
+    });
+  } else {
+    out.push({
+      id: "pr-4",
+      group: "progress",
+      tone: "pink",
+      icon: "🏆",
+      title: "Premium paket talebi hazır",
+      desc: "Bu seviyede talepler daha hızlı kapanır — teklifleri kaçırma."
     });
   }
 
-  function applyDateToActive(dateStr: string) {
-    if (!activeDateField) return;
-
-    switch (activeDateField) {
-      case "car.pickupDate":
-        setCarRental((p) => ({ ...p, pickupDate: dateStr }));
-        return;
-      case "car.dropoffDate":
-        setCarRental((p) => ({ ...p, dropoffDate: dateStr }));
-        return;
-
-      case "stayDraft.checkIn":
-        setStayDraft((p) => ({ ...p, checkIn: dateStr }));
-        return;
-      case "stayDraft.checkOut":
-        setStayDraft((p) => ({ ...p, checkOut: dateStr }));
-        return;
-
-      case "rentalDraft.date":
-        setRentalDraft((p) => ({ ...p, date: dateStr }));
-        return;
-      case "rentalDraft.returnDate":
-        setRentalDraft((p) => ({ ...p, returnDate: dateStr }));
-        return;
-
-      case "tourDraft.date":
-        setTourDraft((p) => ({ ...p, date: dateStr }));
-        return;
-
-      case "transferDraft.date":
-        setTransferDraft((p) => ({ ...p, date: dateStr }));
-        return;
-
-      case "extraDraftDate":
-        setExtraDraftDate(dateStr);
-        return;
-
-      default:
-        return;
-    }
+  // CITIES
+  if (!args.cities.length) {
+    out.push({
+      id: "ct-0",
+      group: "cities",
+      tone: "sky",
+      icon: "📍",
+      title: "Şehirleri yaz → acenta rotayı planlasın",
+      desc: "Bu ekran “otel seçme” değil; “ihtiyaç bildirme” ekranı."
+    });
+  } else {
+    out.push({
+      id: "ct-1",
+      group: "cities",
+      tone: "emerald",
+      icon: "🗺️",
+      title: `${args.cities.join(" • ")} rotasında ${agencies}+ acenta`,
+      desc: `İlk teklif dalgası genelde ${fastMin} dk içinde başlar.`
+    });
   }
 
-  // UI state
+  // DATES
+  if (!args.dateFrom || !args.dateTo) {
+    out.push({
+      id: "dt-0",
+      group: "dates",
+      tone: "sky",
+      icon: "📅",
+      title: "Tarih seç → gece/gün netleşsin",
+      desc: "Tarih netliği paket maliyetini doğrudan belirler."
+    });
+  } else {
+    out.push({
+      id: "dt-1",
+      group: "dates",
+      tone: "amber",
+      icon: "⏳",
+      title: `${args.nights} gece / ${args.nights + 1} gün`,
+      desc: "Konaklama gecesini ayrı ayarlayabilirsin. Acenta planı buna göre kurar."
+    });
+  }
+
+  // PAX
+  const pax = args.paxAdults + args.paxChildren;
+  out.push({
+    id: "px-1",
+    group: "pax",
+    tone: args.paxChildren > 0 ? "pink" : "emerald",
+    icon: args.paxChildren > 0 ? "👨‍👩‍👧" : "👤",
+    title: `${pax} kişi için paket tasarlanır`,
+    desc: args.paxChildren > 0 ? "Çocuk yaşları girilirse oda planı doğru çıkar." : "Kişi sayısı net → teklif daha hızlı."
+  });
+
+  // HOTEL
+  out.push({
+    id: "ht-1",
+    group: "hotel",
+    tone: args.hotelPref === "luxury" ? "pink" : args.hotelPref === "any" ? "sky" : "amber",
+    icon: "🏨",
+    title: `Konaklama: ${args.hotelPref}`,
+    desc: args.hotelPref === "any" ? "Farketmez dersen acenta en iyi fiyat/performansı seçer." : "Tercih yaparsan otel bandı netleşir."
+  });
+
+  // TOUR
+  out.push({
+    id: "tr-1",
+    group: "tour",
+    tone: args.wantTours ? "emerald" : "sky",
+    icon: "🧭",
+    title: args.wantTours ? `Tur istiyorum: ${Math.max(1, args.toursCount)} tur` : "Tur istemiyorsan aktivite tarzını yaz",
+    desc: args.wantTours ? "Tur sayısı net → teklifleri kıyaslamak kolaylaşır." : "“Doğa / alışveriş / tarihi yer” gibi…"
+  });
+
+  // CAR
+  out.push({
+    id: "cr-1",
+    group: "car",
+    tone: args.wantCar ? (args.carClass === "vip" ? "pink" : "amber") : "sky",
+    icon: "🚗",
+    title: args.wantCar ? `Araç: ${args.carClass}` : "Araç istemiyorsan transfer daha kritik",
+    desc: args.wantCar ? (args.licenseYear ? `Ehliyet yılı: ${args.licenseYear}` : "Ehliyet yılını yazarsan hızlı netleşir.") : "Araç yoksa transfer seçimi paket kalitesini artırır."
+  });
+
+  // TRANSFER
+  out.push({
+    id: "tf-1",
+    group: "transfer",
+    tone: args.transferType === "roundtrip" ? "emerald" : args.transferType === "oneway" ? "amber" : "sky",
+    icon: "🚌",
+    title:
+      args.transferType === "none"
+        ? "Transfer: İstemiyorum"
+        : args.transferType === "oneway"
+        ? "Transfer: Tek yön"
+        : "Transfer: Çift yön",
+    desc: "Transfer seçimi toplam fiyatı ciddi etkiler."
+  });
+
+  // FLIGHT
+  out.push({
+    id: "fl-1",
+    group: "flight",
+    tone: args.wantFlight ? "amber" : "sky",
+    icon: "✈️",
+    title: args.wantFlight ? "Uçak bileti dahil" : "Uçak bileti yok (opsiyonel)",
+    desc: args.wantFlight ? "Şehir/rota ve saat beklentini yazarsan teklif netleşir." : "Uçak dahil değilse acenta otel+tur tarafını güçlendirir."
+  });
+
+  // BUDGET
+  out.push({
+    id: "bd-1",
+    group: "budget",
+    tone: args.budgetMax != null ? "amber" : "sky",
+    icon: "💰",
+    title: "Bütçe yazmak teklif kalitesini artırır",
+    desc: args.budgetMax != null ? "Bütçe bandı net → acenta boşa teklif yazmaz." : "Bütçe boşsa: çok farklı paketler gelir."
+  });
+
+  // NOTES
+  out.push({
+    id: "nt-1",
+    group: "notes",
+    tone: "emerald",
+    icon: "📝",
+    title: "Notlar = paketin kalbi",
+    desc: "Şoförlü/VIP/erken giriş/iptal şartı… aynı fiyatı bile değiştirir."
+  });
+
+  // DEADLINE
+  const human = `${args.responseAmount} ${responseUnitLabelTR(args.responseUnit)}`;
+  out.push({
+    id: "dl-1",
+    group: "deadline",
+    tone: args.responseUnit === "minutes" ? "amber" : "emerald",
+    icon: "⏱️",
+    title: `Cevap süresi: ${human}`,
+    desc: args.responseUnit === "minutes"
+      ? "Kısa süre = hızlı ilk dalga."
+      : args.responseUnit === "hours"
+      ? "Orta süre = daha çok acenta."
+      : "Uzun süre = maksimum seçenek."
+  });
+
+  // group by
+  const by: Record<PromoGroup, PromoItem[]> = {
+    progress: [],
+    cities: [],
+    dates: [],
+    pax: [],
+    hotel: [],
+    tour: [],
+    car: [],
+    transfer: [],
+    flight: [],
+    budget: [],
+    notes: [],
+    deadline: []
+  };
+  out.forEach((x) => by[x.group].push(x));
+  return by;
+}
+
+function PromoStrip({ items }: { items: PromoItem[] }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="mt-2 grid gap-2">
+      {items.map((it) => (
+        <div
+          key={it.id}
+          className={`rounded-xl border px-3 py-2 text-[0.78rem] ${toneCls(it.tone)} bg-black/10`}
+          style={{ animation: "promoIn .18s ease-out" }}
+        >
+          <div className="flex items-start gap-2">
+            <div className="text-base leading-none">{it.icon}</div>
+            <div className="min-w-0">
+              <div className="font-semibold text-slate-50">{it.title}</div>
+              <div className="text-[0.72rem] text-slate-200/85 mt-0.5">{it.desc}</div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Hint({ children }: { children: React.ReactNode }) {
+  return <div className="mt-1 text-[0.72rem] text-slate-400">{children}</div>;
+}
+
+function StatChip({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2">
+      <p className="text-[0.65rem] text-slate-400">{label}</p>
+      <p className="text-sm font-extrabold text-white">{value}</p>
+    </div>
+  );
+}
+
+function ProgressBar({ value }: { value: number }) {
+  const pct = clamp(Math.round(value), 0, 100);
+  const barCls =
+    pct >= 85 ? "bg-pink-400/80" : pct >= 60 ? "bg-emerald-400/80" : pct >= 30 ? "bg-amber-400/80" : "bg-sky-400/80";
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[0.7rem] text-slate-300">Paket Kalitesi</p>
+        <p className="text-[0.7rem] text-slate-200">
+          <b className="text-white">{pct}%</b>
+        </p>
+      </div>
+      <div className="mt-2 h-2 rounded-full bg-black/30 overflow-hidden">
+        <div className={`h-full ${barCls}`} style={{ width: `${pct}%` }} />
+      </div>
+      <div className="mt-2 text-[0.7rem] text-slate-400">
+        {pct < 30
+          ? "İskelet kuruluyor… (şehir + tarih + kişi)"
+          : pct < 60
+          ? "Harika gidiyor… (%50 oldu, müthiş paket geliyor)"
+          : pct < 85
+          ? "Çok iyi… (tur/transfer/araç netleşiyor)"
+          : "Premium seviye… (acentanın işi çok kolay, hızlı teklif gelir)"}
+      </div>
+    </div>
+  );
+}
+export default function GuestPackageRequestNewPage() {
+  const { profile, loading: authLoading } = useAuth() as any;
+  const db = getFirestoreDb();
+  const router = useRouter();
+
+  // wizard focus
+  const [activeStep, setActiveStep] = useState<1 | 2 | 3 | 4 | 5>(1);
+
+  // core
+  const [title, setTitle] = useState("");
+  const [citiesText, setCitiesText] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const nights = useMemo(() => calcNights(dateFrom, dateTo), [dateFrom, dateTo]);
+
+  // pax
+  const [paxAdults, setPaxAdults] = useState(2);
+  const [paxChildren, setPaxChildren] = useState(0);
+  const [childrenAges, setChildrenAges] = useState<number[]>([]);
+
+  // hotel
+  const [hotelNights, setHotelNights] = useState<number>(nights);
+  const [roomsCount, setRoomsCount] = useState(1);
+  const [roomTypePref, setRoomTypePref] = useState<RoomTypePref>("any");
+  const [boardPref, setBoardPref] = useState<BoardPref>("any");
+  const [hotelPref, setHotelPref] = useState<HotelPref>("any");
+
+  // tours
+  const [wantTours, setWantTours] = useState(true);
+  const [toursCount, setToursCount] = useState(2);
+  const [activities, setActivities] = useState("");
+
+  // car
+  const [wantCar, setWantCar] = useState(false);
+  const [vehicleClass, setVehicleClass] = useState<VehicleClass>("economy");
+  const [driverCount, setDriverCount] = useState(1);
+  const [licenseYear, setLicenseYear] = useState<number | "">("");
+  const [carSeats, setCarSeats] = useState(5);
+  const [rentalExtras, setRentalExtras] = useState("");
+
+  // transfer
+  const [transferType, setTransferType] = useState<TransferType>("roundtrip");
+  const [transferNotes, setTransferNotes] = useState("");
+
+  // flight
+  const [wantFlight, setWantFlight] = useState(false);
+  const [flightNotes, setFlightNotes] = useState("");
+
+  // budget
+  const [budgetMin, setBudgetMin] = useState<string>("");
+  const [budgetMax, setBudgetMax] = useState<string>("");
+
+  // notes
+  const [specialNotes, setSpecialNotes] = useState("");
+
+  // contact
+  const [contactName, setContactName] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
+
+  // response time
+  const [responseAmount, setResponseAmount] = useState(3);
+  const [responseUnit, setResponseUnit] = useState<ResponseUnit>("hours");
+
+  // ui
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [okOpen, setOkOpen] = useState(false);
+  const [okText, setOkText] = useState("");
+
+  // tick
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((t) => (t + 1) % 999999), 2600);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    setHotelNights(nights);
+  }, [nights]);
+
+  useEffect(() => {
+    if (!authLoading && profile) {
+      setContactName(profile.displayName || "");
+      setContactEmail(profile.email || "");
+    }
+  }, [authLoading, profile]);
+
+  function syncChildrenAges(n: number) {
+    setPaxChildren(n);
+    setChildrenAges((prev) => {
+      const next = [...prev];
+      while (next.length < n) next.push(6);
+      while (next.length > n) next.pop();
+      return next;
+    });
+  }
+
+  const cities = useMemo(() => {
+    const arr = citiesText
+      .split(/,|\n/g)
+      .map((x) => x.trim())
+      .filter(Boolean);
+    return Array.from(new Set(arr));
+  }, [citiesText]);
+
+  // progress score (0..100)
+  const progress = useMemo(() => {
+    let score = 0;
+
+    // rota/tarih: 0..40
+    if (cities.length >= 1) score += 12;
+    if (cities.length >= 2) score += 6;
+    if (dateFrom) score += 10;
+    if (dateTo) score += 10;
+    if (dateFrom && dateTo) score += 2;
+
+    // pax/otel: 0..25
+    if (paxAdults >= 1) score += 6;
+    if (roomsCount >= 1) score += 4;
+    if (paxChildren > 0) score += 3;
+    if (paxChildren > 0 && childrenAges.length === paxChildren) score += 2;
+    if (roomTypePref !== "any") score += 4;
+    if (boardPref !== "any") score += 3;
+    if (hotelPref !== "any") score += 3;
+
+    // extras: 0..25
+    if (wantTours) score += 6;
+    if (wantTours && toursCount > 0) score += 4;
+    if (activities.trim().length >= 10) score += 3;
+
+    if (transferType !== "none") score += 4;
+    if (transferNotes.trim().length >= 10) score += 2;
+
+    if (wantCar) score += 4;
+    if (wantCar && licenseYear !== "") score += 1;
+    if (wantCar && rentalExtras.trim().length >= 10) score += 1;
+
+    if (wantFlight) score += 3;
+    if (wantFlight && flightNotes.trim().length >= 10) score += 2;
+
+    // budget/notes: 0..10
+    if (budgetMin.trim() || budgetMax.trim()) score += 5;
+    if (specialNotes.trim().length >= 15) score += 5;
+
+    return clamp(score, 0, 100);
+  }, [
+    cities.length,
+    dateFrom,
+    dateTo,
+    paxAdults,
+    paxChildren,
+    childrenAges.length,
+    roomsCount,
+    roomTypePref,
+    boardPref,
+    hotelPref,
+    wantTours,
+    toursCount,
+    activities,
+    transferType,
+    transferNotes,
+    wantCar,
+    licenseYear,
+    rentalExtras,
+    wantFlight,
+    flightNotes,
+    budgetMin,
+    budgetMax,
+    specialNotes
+  ]);
+
+  const bMin = useMemo(() => (budgetMin.trim() ? Number(budgetMin) : null), [budgetMin]);
+  const bMax = useMemo(() => (budgetMax.trim() ? Number(budgetMax) : null), [budgetMax]);
+
+  const responseDeadlineMinutes = useMemo(() => {
+    const amt = Number(responseAmount) || 1;
+    return toMinutes(amt, responseUnit);
+  }, [responseAmount, responseUnit]);
+
+  const promos = useMemo(() => {
+    return buildPromos({
+      tick,
+      progress,
+      cities,
+      dateFrom,
+      dateTo,
+      nights,
+      paxAdults,
+      paxChildren,
+      roomsCount,
+      roomTypePref,
+      boardPref,
+      hotelPref,
+      wantTours,
+      toursCount,
+      wantCar,
+      carClass: wantCar ? vehicleClass : "none",
+      licenseYear: licenseYear === "" ? null : Number(licenseYear),
+      transferType,
+      wantFlight,
+      budgetMin: bMin,
+      budgetMax: bMax,
+      notes: specialNotes,
+      responseAmount: Number(responseAmount) || 1,
+      responseUnit
+    });
+  }, [
+    tick,
+    progress,
+    cities,
+    dateFrom,
+    dateTo,
+    nights,
+    paxAdults,
+    paxChildren,
+    roomsCount,
+    roomTypePref,
+    boardPref,
+    hotelPref,
+    wantTours,
+    toursCount,
+    wantCar,
+    vehicleClass,
+    licenseYear,
+    transferType,
+    wantFlight,
+    bMin,
+    bMax,
+    specialNotes,
+    responseAmount,
+    responseUnit
+  ]);
+
+  function rotate2<T>(items: T[]) {
+    if (!items || items.length === 0) return [];
+    if (items.length <= 2) return items;
+    const start = tick % items.length;
+    return [items[start], items[(start + 1) % items.length]];
+  }
+
+  const summary = useMemo(() => {
+    const pax = paxAdults + paxChildren;
+    const cityCount = cities.length;
+    const hasBudget = !!(budgetMin.trim() || budgetMax.trim());
+
+    return {
+      cityCount,
+      pax,
+      nights,
+      days: nights + 1,
+      hotelNights,
+      roomsCount,
+      wantTours,
+      toursCount: wantTours ? toursCount : 0,
+      wantCar,
+      vehicleClass: wantCar ? vehicleClass : "none",
+      transferType,
+      wantFlight,
+      hasBudget
+    };
+  }, [
+    paxAdults,
+    paxChildren,
+    cities.length,
+    nights,
+    hotelNights,
+    roomsCount,
+    wantTours,
+    toursCount,
+    wantCar,
+    vehicleClass,
+    transferType,
+    wantFlight,
+    budgetMin,
+    budgetMax
+  ]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setErr(null);
-    setMsg(null);
 
-    if (!profile?.uid) return setErr("Giriş bilgisi bulunamadı.");
-    if (!dateFrom || !dateTo) return setErr("Tarih seçimi zorunlu.");
-    if (!city.trim()) return setErr("Şehir zorunlu.");
-    if (adults < 1) return setErr("Yetişkin sayısı en az 1 olmalı.");
+    if (!profile?.uid) {
+      setErr("Devam etmek için giriş yapmalısın.");
+      return;
+    }
+    if (cities.length === 0) {
+      setErr("Lütfen en az 1 şehir yaz (rota şehirleri).");
+      return;
+    }
+    if (!dateFrom || !dateTo) {
+      setErr("Lütfen başlangıç ve bitiş tarihini seç.");
+      return;
+    }
+    if (paxAdults < 1) {
+      setErr("Yetişkin sayısı en az 1 olmalı.");
+      return;
+    }
+    if (!contactName.trim() || !digitsOnly(contactPhone).length) {
+      setErr("İsim ve telefon zorunlu.");
+      return;
+    }
+    if (bMin != null && Number.isNaN(bMin)) {
+      setErr("Bütçe min sayısal olmalı.");
+      return;
+    }
+    if (bMax != null && Number.isNaN(bMax)) {
+      setErr("Bütçe max sayısal olmalı.");
+      return;
+    }
+    if (bMin != null && bMax != null && bMin > bMax) {
+      setErr("Bütçe min, bütçe max’tan büyük olamaz.");
+      return;
+    }
 
     try {
       setSaving(true);
 
-      // include flags: misafirin yaptığı her şeye göre otomatik
-      const includeFlags: Record<IncludeKey, boolean> = {
-        hotel: stays.length > 0,
-        car: carRental.enabled,
-        rentalItem: rentalItems.length > 0,
-        tour: tours.length > 0,
-        transfer: transfers.length > 0,
-        extras: extras.length > 0,
-        guide: tours.some((t) => (t.tourType ?? "") === "private") || false,
-        insurance: false
-      };
-
-      await addDoc(collection(db, "packageRequests"), {
+      const payload = {
         createdByRole: "guest",
         createdById: profile.uid,
-        createdByName: profile.displayName ?? profile.email ?? "Misafir",
-        createdByPhone: profile.guestProfile?.phone ?? null,
+        createdByName: cleanText(profile.displayName) || cleanText(contactName) || "Misafir",
+        createdByPhone: digitsOnly(contactPhone) ? cleanText(contactPhone) : null,
 
-        title: title.trim() || null,
+        title: cleanText(title) || null,
 
-        city: city.trim(),
-        district: district.trim() || null,
+        cities,
+        city: cities[0],
+        district: null,
 
         dateFrom,
         dateTo,
         nights,
+        days: nights + 1,
 
-        paxAdults: adults,
-        paxChildren: childrenCount,
-        childrenAges,
+        paxAdults,
+        paxChildren,
+        childrenAges: paxChildren > 0 ? childrenAges : [],
 
-        include: includeFlags,
+        hotelNights: Number(hotelNights) || nights,
+        roomsCount: Number(roomsCount) || 1,
+        roomTypePref,
+        boardPref,
+        hotelPref,
 
-        budgetMin: budgetMin ? Number(budgetMin) : null,
-        budgetMax: budgetMax ? Number(budgetMax) : null,
+        wantTours,
+        toursCount: wantTours ? Math.max(0, Number(toursCount) || 0) : 0,
+        activities: cleanText(activities) || null,
+
+        wantCar,
+        vehicleClass: wantCar ? vehicleClass : "none",
+        driverCount: wantCar ? Math.max(1, Number(driverCount) || 1) : 0,
+        licenseYear: wantCar && licenseYear !== "" ? Number(licenseYear) : null,
+        carSeats: wantCar ? Math.max(2, Number(carSeats) || 5) : 0,
+        rentalExtras: cleanText(rentalExtras) || null,
+
+        transferType,
+        transferNotes: cleanText(transferNotes) || null,
+
+        wantFlight,
+        flightNotes: cleanText(flightNotes) || null,
+
+        budgetMin: bMin,
+        budgetMax: bMax,
+
+        notes: cleanText(specialNotes) || null,
+
+        contact: {
+          name: cleanText(contactName),
+          phone: cleanText(contactPhone),
+          email: cleanText(contactEmail) || null
+        },
+
         responseDeadlineMinutes,
-
-        notes: notes.trim() || null,
-
-        // ✅ detay modüller (acentanın eksiksiz görmesi için)
-        carRental,
-        stays,
-        rentalItems,
-        tours,
-        transfers,
-        extras,
+        responseTimeAmount: Number(responseAmount) || 1,
+        responseTimeUnit: responseUnit,
 
         status: "open",
         createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
 
-      setMsg("Paket talebin oluşturuldu. Sadece acentalar bu talebi görebilir ve teklif verebilir.");
-      setTimeout(() => router.push("/guest/offers"), 700);
+        // UI/UX için: kalite metriği
+        qualityScore: progress
+      };
+
+      await addDoc(collection(db, "packageRequests"), payload);
+
+      setOkText("Paket talebin gönderildi. Acentalar ihtiyaçlarına göre planı kurgulayıp teklif verecek.");
+      setOkOpen(true);
     } catch (e: any) {
       console.error(e);
       setErr(e?.message || "Paket talebi kaydedilemedi.");
@@ -375,675 +868,704 @@ export default function GuestPackageRequestNewPage() {
       setSaving(false);
     }
   }
-
-  // küçük helperlar
-  function addStay() {
-    if (!stayDraft.checkIn || !stayDraft.checkOut) return setErr("Konaklama planında giriş/çıkış seç.");
-    setStays((prev) => [...prev, { ...stayDraft }]);
-    setStayDraft({ city: "", hotelPref: "", checkIn: "", checkOut: "", people: 2, rooms: 1, roomType: "Standart", notes: "" });
-  }
-  function clearStays() {
-    setStays([]);
-  }
-
-  function addRentalItem() {
-    if (!rentalDraft.name) return setErr("Kiralık eşya adı yaz.");
-    setRentalItems((prev) => [...prev, { ...rentalDraft }]);
-    setRentalDraft({ name: "", date: "", time: "10:00", returnDate: "", returnTime: "10:00", days: 1, qty: 1, notes: "" });
-  }
-  function clearRentalItems() {
-    setRentalItems([]);
+  if (authLoading) {
+    return (
+      <Protected allowedRoles={["guest"]}>
+        <div className="container-page">
+          <p className="text-sm text-slate-400">Yükleniyor…</p>
+        </div>
+      </Protected>
+    );
   }
 
-  function addTour() {
-    if (!tourDraft.tourName) return setErr("Tur seç/isim yaz.");
-    setTours((prev) => [...prev, { ...tourDraft }]);
-    setTourDraft({ tourName: "", tourType: "group", date: "", time: "10:00", people: 2, notes: "" });
-  }
-  function clearTours() {
-    setTours([]);
-  }
-
-  function addTransfer() {
-    if (!transferDraft.from || !transferDraft.to) return setErr("Transfer nereden/nereye zorunlu.");
-    setTransfers((prev) => [...prev, { ...transferDraft }]);
-    setTransferDraft({ direction: "oneway", from: "", to: "", date: "", time: "09:00", notes: "" });
-  }
-  function clearTransfers() {
-    setTransfers([]);
-  }
-
-  function addSelectedExtras() {
-    const chosen = Object.entries(extraSelectedKeys).filter(([, v]) => v).map(([k]) => k);
-    if (chosen.length === 0) return setErr("Ekstra seç.");
-    const rows: ExtraSelected[] = chosen.map((k) => ({
-      key: k,
-      qty: extraDraftQty,
-      date: extraDraftDate || null || undefined,
-      time: extraDraftTime || null || undefined,
-      days: extraDraftDays,
-      notes: ""
-    }));
-    setExtras((prev) => [...prev, ...rows]);
-    setExtraSelectedKeys({});
-  }
-  function clearExtras() {
-    setExtras([]);
-  }
   return (
     <Protected allowedRoles={["guest"]}>
-      <div className="container-page space-y-6">
-        <section className="space-y-2">
-          <h1 className="text-2xl font-semibold text-slate-100">Paket Talebi Oluştur</h1>
-          <p className="text-sm text-slate-300 max-w-3xl">
-            Bu paket talebini <b>sadece sisteme kayıtlı acentalar</b> görür ve teklif verir. Misafir olarak yaptığın tüm seçimler veritabanına kaydedilir.
-          </p>
-        </section>
+      <div className="container-page max-w-6xl space-y-6 relative">
+        {/* premium bg */}
+        <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+          <div className="absolute -top-40 left-1/2 h-[560px] w-[900px] -translate-x-1/2 rounded-full bg-emerald-500/10 blur-3xl" />
+          <div className="absolute top-44 -left-40 h-[520px] w-[620px] rounded-full bg-sky-500/10 blur-3xl" />
+          <div className="absolute bottom-0 -right-56 h-[620px] w-[760px] rounded-full bg-pink-500/10 blur-3xl" />
+          <div className="absolute inset-0 bg-gradient-to-b from-slate-950/30 via-slate-950 to-slate-950" />
+        </div>
 
-        {(msg || err) && (
-          <div className="space-y-2">
-            {msg && <div className="alert-success">{msg}</div>}
-            {err && <div className="alert-error">{err}</div>}
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
-          {/* SOL: FORMLAR */}
-          <div className="space-y-4">
-
-            {/* 1) Tarih Seçimi */}
-            <div className="card">
-              <h2 className="card-title">1) Tarih Seçimi</h2>
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="space-y-1">
-                  <label className="label">Başlangıç</label>
-                  <input
-                    type="date"
-                    value={dateFrom}
-                    onChange={(e) => setDateFrom(e.target.value)}
-                    className="input"
-                    onFocus={() => setActiveDateField("")}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="label">Bitiş</label>
-                  <input
-                    type="date"
-                    value={dateTo}
-                    onChange={(e) => setDateTo(e.target.value)}
-                    className="input"
-                    onFocus={() => setActiveDateField("")}
-                  />
-                </div>
-              </div>
-              <p className="muted">Gece: <b className="text-slate-100">{nights}</b></p>
-            </div>
-
-            {/* 2) Paket genel */}
-            <div className="card">
-              <h2 className="card-title">2) Paket Genel</h2>
-              <div className="grid gap-3 md:grid-cols-3">
-                <div className="space-y-1 md:col-span-3">
-                  <label className="label">Başlık (opsiyonel)</label>
-                  <input value={title} onChange={(e) => setTitle(e.target.value)} className="input" placeholder="Örn: Trabzon + Uzungöl + Transfer" />
-                </div>
-                <div className="space-y-1 md:col-span-2">
-                  <label className="label">Şehir</label>
-                  <input value={city} onChange={(e) => setCity(e.target.value)} className="input" placeholder="Örn: Trabzon" />
-                </div>
-                <div className="space-y-1">
-                  <label className="label">İlçe (opsiyonel)</label>
-                  <input value={district} onChange={(e) => setDistrict(e.target.value)} className="input" placeholder="Örn: Ortahisar" />
-                </div>
-              </div>
-            </div>
-
-            {/* 3) Araç Alış/Bırakış */}
-            <div className="card">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="card-title">3) Araç Alış / Bırakış</h2>
-                <label className="flex items-center gap-2 text-xs text-slate-200">
-                  <input
-                    type="checkbox"
-                    checked={carRental.enabled}
-                    onChange={(e) => setCarRental((p) => ({ ...p, enabled: e.target.checked }))}
-                  />
-                  Araç dahil
-                </label>
-              </div>
-
-              {!carRental.enabled ? (
-                <p className="muted">Araç istemiyorsan kapalı bırak.</p>
-              ) : (
-                <>
-                  <div className="flex flex-wrap gap-2">
-                    <span className={`chip ${carRental.policies.freeCancellation48h ? "chip-on" : ""}`}
-                      onClick={() => setCarRental((p) => ({ ...p, policies: { ...p.policies, freeCancellation48h: !p.policies.freeCancellation48h } }))}
-                    >Ücretsiz iptal (48s)</span>
-                    <span className={`chip ${carRental.policies.instantApproval ? "chip-on" : ""}`}
-                      onClick={() => setCarRental((p) => ({ ...p, policies: { ...p.policies, instantApproval: !p.policies.instantApproval } }))}
-                    >Anında onay</span>
-                    <span className={`chip ${carRental.policies.creditCardDeposit ? "chip-on" : ""}`}
-                      onClick={() => setCarRental((p) => ({ ...p, policies: { ...p.policies, creditCardDeposit: !p.policies.creditCardDeposit } }))}
-                    >Kredi kartı depozitosu</span>
-                  </div>
-
-                  <div className="grid gap-3 md:grid-cols-2 mt-3">
-                    <Field label="Sürücü yaşı">
-                      <input type="number" value={carRental.driverAge ?? 26} onChange={(e) => setCarRental((p) => ({ ...p, driverAge: Number(e.target.value) }))} className="input" />
-                    </Field>
-                    <Field label="Ehliyet yılı">
-                      <input type="number" value={carRental.licenseYears ?? 3} onChange={(e) => setCarRental((p) => ({ ...p, licenseYears: Number(e.target.value) }))} className="input" />
-                    </Field>
-
-                    <Field label="2. sürücü">
-                      <select value={carRental.secondDriver ? "yes" : "no"} onChange={(e) => setCarRental((p) => ({ ...p, secondDriver: e.target.value === "yes" }))} className="input">
-                        <option value="no">Hayır</option>
-                        <option value="yes">Evet</option>
-                      </select>
-                    </Field>
-
-                    <Field label="Günlük KM limiti">
-                      <select value={carRental.dailyKmLimit ?? "∞"} onChange={(e) => setCarRental((p) => ({ ...p, dailyKmLimit: e.target.value }))} className="input">
-                        <option value="∞">∞</option>
-                        <option value="200">200</option>
-                        <option value="300">300</option>
-                        <option value="500">500</option>
-                      </select>
-                    </Field>
-
-                    <Field label="Yakıt politikası">
-                      <select value={carRental.fuelPolicy ?? "Full to Full"} onChange={(e) => setCarRental((p) => ({ ...p, fuelPolicy: e.target.value }))} className="input">
-                        <option value="Full to Full">Full to Full</option>
-                        <option value="Same to Same">Same to Same</option>
-                        <option value="Full to Empty">Full to Empty</option>
-                      </select>
-                    </Field>
-
-                    <Field label="Mesai dışı teslim">
-                      <select value={carRental.afterHours ? "yes" : "no"} onChange={(e) => setCarRental((p) => ({ ...p, afterHours: e.target.value === "yes" }))} className="input">
-                        <option value="no">Hayır</option>
-                        <option value="yes">Evet</option>
-                      </select>
-                    </Field>
-
-                    <Field label="Tek yön bırakma">
-                      <select value={carRental.oneWay ? "yes" : "no"} onChange={(e) => setCarRental((p) => ({ ...p, oneWay: e.target.value === "yes" }))} className="input">
-                        <option value="no">Hayır</option>
-                        <option value="yes">Evet</option>
-                      </select>
-                    </Field>
-
-                    <Field label="Genç sürücü ücreti">
-                      <select value={carRental.youngDriverFee ?? "Auto"} onChange={(e) => setCarRental((p) => ({ ...p, youngDriverFee: e.target.value }))} className="input">
-                        <option value="Auto">Auto</option>
-                        <option value="Var">Var</option>
-                        <option value="Yok">Yok</option>
-                      </select>
-                    </Field>
-                  </div>
-
-                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 mt-3">
-                    <p className="text-xs text-slate-200 font-semibold mb-2">Alış / bırakış</p>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <Field label="Araç alış (şehir)">
-                        <input value={carRental.pickupCity ?? ""} onChange={(e) => setCarRental((p) => ({ ...p, pickupCity: e.target.value }))} className="input" placeholder="Örn: Trabzon" />
-                      </Field>
-                      <Field label="Araç bırakış (şehir)">
-                        <input value={carRental.dropoffCity ?? ""} onChange={(e) => setCarRental((p) => ({ ...p, dropoffCity: e.target.value }))} className="input" placeholder="Örn: Rize" />
-                      </Field>
-
-                      <Field label="Alış saati">
-                        <input type="time" value={carRental.pickupTime ?? "09:30"} onChange={(e) => setCarRental((p) => ({ ...p, pickupTime: e.target.value }))} className="input" />
-                      </Field>
-                      <Field label="Bırakış saati">
-                        <input type="time" value={carRental.dropoffTime ?? "17:30"} onChange={(e) => setCarRental((p) => ({ ...p, dropoffTime: e.target.value }))} className="input" />
-                      </Field>
-
-                      <Field label="Alış günü">
-                        <input
-                          type="date"
-                          value={carRental.pickupDate ?? ""}
-                          onChange={(e) => setCarRental((p) => ({ ...p, pickupDate: e.target.value }))}
-                          onFocus={() => setActiveDateField("car.pickupDate")}
-                          className="input"
-                        />
-                      </Field>
-                      <Field label="Bırakış günü">
-                        <input
-                          type="date"
-                          value={carRental.dropoffDate ?? ""}
-                          onChange={(e) => setCarRental((p) => ({ ...p, dropoffDate: e.target.value }))}
-                          onFocus={() => setActiveDateField("car.dropoffDate")}
-                          className="input"
-                        />
-                      </Field>
-
-                      <Field label="Araç sınıfı">
-                        <input value={carRental.vehicleClass ?? "Auto"} onChange={(e) => setCarRental((p) => ({ ...p, vehicleClass: e.target.value }))} className="input" placeholder="Auto" />
-                      </Field>
-                    </div>
-                    <p className="muted mt-2">Seçimlerine göre teklif acentadan gelecektir.</p>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* 4) Konaklama Planı */}
-            <div className="card">
-              <h2 className="card-title">4) Konaklama Planı</h2>
-
-              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                <div className="grid gap-3 md:grid-cols-2">
-                  <Field label="Otel (şehir/yer)">
-                    <input value={stayDraft.city ?? ""} onChange={(e) => setStayDraft((p) => ({ ...p, city: e.target.value }))} className="input" placeholder="Örn: Trabzon" />
-                  </Field>
-                  <Field label="Otel tercihi (opsiyonel)">
-                    <input value={stayDraft.hotelPref ?? ""} onChange={(e) => setStayDraft((p) => ({ ...p, hotelPref: e.target.value }))} className="input" placeholder="Örn: Merkezde / deniz manzarası" />
-                  </Field>
-
-                  <Field label="Giriş">
-                    <input type="date" value={stayDraft.checkIn ?? ""} onChange={(e) => setStayDraft((p) => ({ ...p, checkIn: e.target.value }))} onFocus={() => setActiveDateField("stayDraft.checkIn")} className="input" />
-                  </Field>
-                  <Field label="Çıkış">
-                    <input type="date" value={stayDraft.checkOut ?? ""} onChange={(e) => setStayDraft((p) => ({ ...p, checkOut: e.target.value }))} onFocus={() => setActiveDateField("stayDraft.checkOut")} className="input" />
-                  </Field>
-
-                  <Field label="Kişi">
-                    <input type="number" value={stayDraft.people ?? 2} onChange={(e) => setStayDraft((p) => ({ ...p, people: Number(e.target.value) }))} className="input" />
-                  </Field>
-                  <Field label="Oda">
-                    <input type="number" value={stayDraft.rooms ?? 1} onChange={(e) => setStayDraft((p) => ({ ...p, rooms: Number(e.target.value) }))} className="input" />
-                  </Field>
-
-                  <Field label="Oda tipi">
-                    <select value={stayDraft.roomType ?? "Standart"} onChange={(e) => setStayDraft((p) => ({ ...p, roomType: e.target.value }))} className="input">
-                      <option>Standart</option>
-                      <option>Aile</option>
-                      <option>Deluxe</option>
-                      <option>Suit</option>
-                    </select>
-                  </Field>
-
-                  <Field label="Not (opsiyonel)">
-                    <input value={stayDraft.notes ?? ""} onChange={(e) => setStayDraft((p) => ({ ...p, notes: e.target.value }))} className="input" placeholder="Örn: sigarasız oda" />
-                  </Field>
-                </div>
-
-                <div className="flex gap-2 mt-3">
-                  <button type="button" onClick={addStay} className="btn-primary">Plana Ekle</button>
-                  <button type="button" onClick={clearStays} className="btn-secondary">Planı Temizle</button>
-                </div>
-
-                <p className="muted mt-2">{stays.length ? `${stays.length} konaklama eklendi.` : "Henüz konaklama eklenmedi."}</p>
-              </div>
-
-              {stays.length > 0 && (
-                <div className="mt-3 space-y-2">
-                  {stays.map((s, idx) => (
-                    <div key={idx} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-sm text-slate-200">
-                      <b>#{idx + 1}</b> {safeStr(s.city)} • {safeStr(s.checkIn)} – {safeStr(s.checkOut)} • {safeStr(s.roomType)}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* 5) Kiralık Eşya */}
-            <div className="card">
-              <h2 className="card-title">5) Kiralık Eşya</h2>
-
-              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                <p className="muted mb-2">Eşya kiralamada gün sayısı alış/iade tarihine göre otomatik hesaplanır.</p>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <Field label="Eşya">
-                    <input value={rentalDraft.name ?? ""} onChange={(e) => setRentalDraft((p) => ({ ...p, name: e.target.value }))} className="input" placeholder="Örn: Bebek koltuğu" />
-                  </Field>
-
-                  <Field label="Alış günü">
-                    <input type="date" value={rentalDraft.date ?? ""} onChange={(e) => setRentalDraft((p) => ({ ...p, date: e.target.value }))} onFocus={() => setActiveDateField("rentalDraft.date")} className="input" />
-                  </Field>
-
-                  <Field label="Alış saat">
-                    <input type="time" value={rentalDraft.time ?? "10:00"} onChange={(e) => setRentalDraft((p) => ({ ...p, time: e.target.value }))} className="input" />
-                  </Field>
-
-                  <Field label="İade günü">
-                    <input type="date" value={rentalDraft.returnDate ?? ""} onChange={(e) => setRentalDraft((p) => ({ ...p, returnDate: e.target.value }))} onFocus={() => setActiveDateField("rentalDraft.returnDate")} className="input" />
-                  </Field>
-
-                  <Field label="İade saat">
-                    <input type="time" value={rentalDraft.returnTime ?? "10:00"} onChange={(e) => setRentalDraft((p) => ({ ...p, returnTime: e.target.value }))} className="input" />
-                  </Field>
-
-                  <Field label="Gün">
-                    <input type="number" value={rentalDraft.days ?? 1} onChange={(e) => setRentalDraft((p) => ({ ...p, days: Number(e.target.value) }))} className="input" />
-                  </Field>
-
-                  <Field label="Adet">
-                    <input type="number" value={rentalDraft.qty ?? 1} onChange={(e) => setRentalDraft((p) => ({ ...p, qty: Number(e.target.value) }))} className="input" />
-                  </Field>
-                </div>
-
-                <div className="flex gap-2 mt-3">
-                  <button type="button" onClick={addRentalItem} className="btn-primary">Ekle</button>
-                  <button type="button" onClick={clearRentalItems} className="btn-secondary">Temizle</button>
-                </div>
-              </div>
-
-              {rentalItems.length > 0 && (
-                <div className="mt-3 space-y-2">
-                  {rentalItems.map((it, idx) => (
-                    <div key={idx} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-sm text-slate-200">
-                      <b>#{idx + 1}</b> {safeStr(it.name)} • {safeStr(it.date)} → {safeStr(it.returnDate)} • {safeStr(it.qty)} adet
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* 6) Tur & Transfer */}
-            <div className="card">
-              <h2 className="card-title">6) Tur & Transfer</h2>
-
-              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 space-y-3">
-                <p className="text-sm font-semibold text-slate-100">Tur Ekle</p>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <Field label="Tur">
-                    <input value={tourDraft.tourName ?? ""} onChange={(e) => setTourDraft((p) => ({ ...p, tourName: e.target.value }))} className="input" placeholder="Örn: Uzungöl Turu" />
-                  </Field>
-                  <Field label="Tur tipi">
-                    <select value={tourDraft.tourType ?? "group"} onChange={(e) => setTourDraft((p) => ({ ...p, tourType: e.target.value as any }))} className="input">
-                      <option value="group">Grup</option>
-                      <option value="private">Özel</option>
-                    </select>
-                  </Field>
-                  <Field label="Tarih">
-                    <input type="date" value={tourDraft.date ?? ""} onChange={(e) => setTourDraft((p) => ({ ...p, date: e.target.value }))} onFocus={() => setActiveDateField("tourDraft.date")} className="input" />
-                  </Field>
-                  <Field label="Saat">
-                    <input type="time" value={tourDraft.time ?? "10:00"} onChange={(e) => setTourDraft((p) => ({ ...p, time: e.target.value }))} className="input" />
-                  </Field>
-                  <Field label="Kişi">
-                    <input type="number" value={tourDraft.people ?? 2} onChange={(e) => setTourDraft((p) => ({ ...p, people: Number(e.target.value) }))} className="input" />
-                  </Field>
-                </div>
-                <div className="flex gap-2">
-                  <button type="button" onClick={addTour} className="btn-primary">Tur Ekle</button>
-                  <button type="button" onClick={clearTours} className="btn-secondary">Turları Kaldır</button>
-                </div>
-
-                <hr className="border-slate-800" />
-
-                <p className="text-sm font-semibold text-slate-100">Transfer Ekle</p>
-                <div className="flex gap-4 text-xs text-slate-200">
-                  <label className="flex items-center gap-2">
-                    <input type="radio" checked={(transferDraft.direction ?? "oneway") === "oneway"} onChange={() => setTransferDraft((p) => ({ ...p, direction: "oneway" }))} />
-                    Tek yön
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input type="radio" checked={(transferDraft.direction ?? "oneway") === "roundtrip"} onChange={() => setTransferDraft((p) => ({ ...p, direction: "roundtrip" }))} />
-                    Çift yön
-                  </label>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-2">
-                  <Field label="Nereden">
-                    <input value={transferDraft.from ?? ""} onChange={(e) => setTransferDraft((p) => ({ ...p, from: e.target.value }))} className="input" placeholder="Örn: Trabzon Havalimanı" />
-                  </Field>
-                  <Field label="Nereye">
-                    <input value={transferDraft.to ?? ""} onChange={(e) => setTransferDraft((p) => ({ ...p, to: e.target.value }))} className="input" placeholder="Örn: Otel" />
-                  </Field>
-                  <Field label="Tarih">
-                    <input type="date" value={transferDraft.date ?? ""} onChange={(e) => setTransferDraft((p) => ({ ...p, date: e.target.value }))} onFocus={() => setActiveDateField("transferDraft.date")} className="input" />
-                  </Field>
-                  <Field label="Saat">
-                    <input type="time" value={transferDraft.time ?? "09:00"} onChange={(e) => setTransferDraft((p) => ({ ...p, time: e.target.value }))} className="input" />
-                  </Field>
-                </div>
-
-                <div className="flex gap-2">
-                  <button type="button" onClick={addTransfer} className="btn-primary">Transfer Ekle</button>
-                  <button type="button" onClick={clearTransfers} className="btn-secondary">Transf. Kaldır</button>
-                </div>
-              </div>
-
-              {(tours.length > 0 || transfers.length > 0) && (
-                <div className="mt-3 space-y-2">
-                  {tours.map((t, i) => (
-                    <div key={`t-${i}`} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-sm text-slate-200">
-                      <b>Tur</b> • {safeStr(t.tourName)} • {safeStr(t.date)} {safeStr(t.time)} • {safeStr(t.tourType)}
-                    </div>
-                  ))}
-                  {transfers.map((t, i) => (
-                    <div key={`tr-${i}`} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-sm text-slate-200">
-                      <b>Transfer</b> • {safeStr(t.from)} → {safeStr(t.to)} • {safeStr(t.date)} {safeStr(t.time)} • {safeStr(t.direction)}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* 7) Ekstralar */}
-            <div className="card">
-              <h2 className="card-title">7) Ekstralar</h2>
-              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 space-y-3">
-                <p className="muted">Ekstra hizmetler “tahmini”dir; teklif sonrası netleşir.</p>
-
-                <div className="grid gap-2 md:grid-cols-2">
-                  {EXTRA_CARDS.map((c) => (
-                    <label key={c.key} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 flex items-center justify-between gap-3">
-                      <div className="space-y-0.5">
-                        <p className="text-sm font-semibold text-slate-100">{c.title}</p>
-                        <p className="text-[0.75rem] text-slate-400">{c.priceHint != null ? `${c.priceHint}₺` : "—"}</p>
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={!!extraSelectedKeys[c.key]}
-                        onChange={(e) => setExtraSelectedKeys((p) => ({ ...p, [c.key]: e.target.checked }))}
-                      />
-                    </label>
-                  ))}
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-3">
-                  <Field label="Adet">
-                    <input type="number" value={extraDraftQty} onChange={(e) => setExtraDraftQty(Number(e.target.value))} className="input" />
-                  </Field>
-                  <Field label="Tarih">
-                    <input type="date" value={extraDraftDate} onChange={(e) => setExtraDraftDate(e.target.value)} onFocus={() => setActiveDateField("extraDraftDate")} className="input" />
-                  </Field>
-                  <Field label="Saat">
-                    <input type="time" value={extraDraftTime} onChange={(e) => setExtraDraftTime(e.target.value)} className="input" />
-                  </Field>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-2">
-                  <Field label="Gün">
-                    <input type="number" value={extraDraftDays} onChange={(e) => setExtraDraftDays(Number(e.target.value))} className="input" />
-                  </Field>
-                  <div className="flex items-end gap-2">
-                    <button type="button" onClick={addSelectedExtras} className="btn-primary w-full">Seçili Ekstraları Ekle</button>
-                    <button type="button" onClick={clearExtras} className="btn-secondary">Temizle</button>
-                  </div>
-                </div>
-
-                <p className="muted">{extras.length ? `${extras.length} ekstra eklendi.` : "Henüz ekstra seçilmedi."}</p>
-              </div>
-
-              {extras.length > 0 && (
-                <div className="mt-3 space-y-2">
-                  {extras.map((x, i) => (
-                    <div key={i} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-sm text-slate-200">
-                      <b>{x.key}</b> • {x.qty} adet • {safeStr(x.date)} {safeStr(x.time)} • {x.days} gün
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* 8) Bütçe + Notlar + Gönder */}
-            <div className="card">
-              <h2 className="card-title">8) Notlar & Şartlar</h2>
-              <div className="grid gap-3 md:grid-cols-3">
-                <Field label="Bütçe min (ops.)">
-                  <input value={budgetMin} onChange={(e) => setBudgetMin(e.target.value)} className="input" placeholder="₺" />
-                </Field>
-                <Field label="Bütçe max (ops.)">
-                  <input value={budgetMax} onChange={(e) => setBudgetMax(e.target.value)} className="input" placeholder="₺" />
-                </Field>
-                <Field label="Cevap süresi">
-                  <select value={responseDeadlineMinutes} onChange={(e) => setResponseDeadlineMinutes(Number(e.target.value))} className="input">
-                    <option value={60}>60 dk</option>
-                    <option value={120}>120 dk</option>
-                    <option value={240}>240 dk</option>
-                  </select>
-                </Field>
-              </div>
-
-              <Field label="Genel not (misafir tüm istekleri)">
-                <textarea value={notes} onChange={(e) => setNotes(e.target.value)} className="input h-28 text-xs" placeholder="Misafirin tüm detayları..." />
-              </Field>
-
-              <div className="flex justify-end gap-2">
-                <button type="submit" disabled={saving} className="btn-primary">
-                  {saving ? "Kaydediliyor..." : "Sepete ekle ve teklif al"}
+        {/* success overlay */}
+        {okOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+            <div className="rounded-2xl border border-emerald-500/30 bg-slate-950/95 p-6 w-full max-w-md shadow-2xl space-y-3">
+              <p className="text-emerald-300 font-semibold text-center text-lg">Premium talep gönderildi 🎉</p>
+              <p className="text-[0.85rem] text-slate-200 text-center">{okText}</p>
+              <p className="text-[0.75rem] text-slate-400 text-center">
+                Teklifleri “Taleplerim” ekranında göreceksin. Beğendiğin teklifi seç → ödeme.
+              </p>
+              <div className="flex justify-center gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setOkOpen(false)}
+                  className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-[0.8rem] text-slate-100 hover:bg-white/10"
+                >
+                  Burada kal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => router.push("/guest/offers")}
+                  className="rounded-xl bg-emerald-500 px-4 py-2 text-[0.8rem] font-semibold text-slate-950 hover:bg-emerald-400"
+                >
+                  Taleplerime git
                 </button>
               </div>
             </div>
           </div>
+        )}
 
-          {/* SAĞ: ÖZET + TAKVİM */}
-          <aside className="space-y-4 sticky top-20 h-fit">
-            <div className="card">
-              <h2 className="card-title">Özet</h2>
-              <p className="text-sm text-slate-100 font-semibold">{safeStr(title, "Paket talebi")}</p>
-              <p className="muted">{safeStr(city)}{district ? ` / ${district}` : ""}</p>
-              <p className="muted">{safeStr(dateFrom)} – {safeStr(dateTo)} • <b className="text-slate-100">{nights}</b> gece</p>
-              <p className="muted">{totalGuests} kişi • Y:{adults} • Ç:{childrenCount}</p>
-
-              <div className="mt-2 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                <p className="text-[0.75rem] text-slate-400">Modül sayısı</p>
-                <p className="text-slate-200 text-sm">
-                  Konaklama: <b>{stays.length}</b> • Araç: <b>{carRental.enabled ? "var" : "yok"}</b> • Tur: <b>{tours.length}</b> • Transfer: <b>{transfers.length}</b> • Eşya: <b>{rentalItems.length}</b> • Ekstra: <b>{extras.length}</b>
-                </p>
+        {/* Header + Progress + Summary */}
+        <div className="rounded-2xl border border-emerald-500/25 bg-gradient-to-r from-emerald-500/12 via-sky-500/5 to-slate-950 px-6 py-5 shadow-[0_30px_120px_rgba(0,0,0,0.45)]">
+          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
+            <div className="space-y-2">
+              <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[0.7rem] text-slate-200">
+                🧳 Paket Talebi → Acenta Teklifi → Seçim → Ödeme → Rezervasyon
               </div>
+
+              <h1 className="text-2xl md:text-3xl font-semibold text-slate-100">Paket talebi oluştur</h1>
+              <p className="text-sm text-slate-300 max-w-4xl">
+                Sen sadece <b>ihtiyaçlarını</b> girersin. Acenta; otel/transfer/tur/araç planını kurar ve teklif verir.
+                Bu sayfa “otel seçme” sayfası değildir.
+              </p>
+
+              <PromoStrip items={rotate2(promos.progress)} />
             </div>
 
-            <div className="card">
-              <h2 className="card-title">Takvim</h2>
-              <p className="muted">Bir güne tıklayınca, son odaklandığın tarih alanı otomatik dolar.</p>
+            <div className="space-y-3 w-full lg:max-w-[420px]">
+              <ProgressBar value={progress} />
 
-              {!calendarDays.length ? (
-                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-slate-400 text-sm">
-                  Takvim için önce başlangıç ve bitiş tarihini seç.
+              <div className="grid grid-cols-2 gap-2">
+                <StatChip label="Şehir" value={`${summary.cityCount}`} />
+                <StatChip label="Kişi" value={`${summary.pax}`} />
+                <StatChip label="Gece" value={`${summary.nights}`} />
+                <StatChip label="Oda" value={`${summary.roomsCount}`} />
+                <StatChip label="Tur" value={summary.wantTours ? `${summary.toursCount}` : "Yok"} />
+                <StatChip label="Araç" value={summary.wantCar ? `${summary.vehicleClass}` : "Yok"} />
+                <StatChip label="Transfer" value={summary.transferType} />
+                <StatChip label="Uçak" value={summary.wantFlight ? "Var" : "Yok"} />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {err && (
+          <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-red-200 text-sm">
+            {err}
+          </div>
+        )}
+
+        {/* Wizard Tabs */}
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                { k: 1, t: "Rota & Tarih" },
+                { k: 2, t: "Konaklama" },
+                { k: 3, t: "Tur/Transfer" },
+                { k: 4, t: "Araç/Uçak" },
+                { k: 5, t: "Bütçe & Gönder" }
+              ] as const
+            ).map((s) => (
+              <button
+                key={s.k}
+                type="button"
+                onClick={() => setActiveStep(s.k)}
+                className={`rounded-full border px-4 py-2 text-[0.75rem] transition ${
+                  activeStep === s.k
+                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+                    : "border-white/10 bg-white/5 text-slate-200 hover:bg-white/10"
+                }`}
+              >
+                {s.t}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          {/* STEP 1 */}
+          {activeStep === 1 && (
+            <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5 shadow shadow-slate-950/40 space-y-3">
+              <h2 className="text-sm font-semibold text-slate-100">1) Rota & Tarih</h2>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Paket başlığı (ops.)</label>
+                  <input
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder="Örn: Karadeniz 4 gece + 2 tur + araç"
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  />
+                  <Hint>Başlık yazarsan teklifleri listelerken daha hızlı bulursun.</Hint>
                 </div>
-              ) : (
-                <div className="grid grid-cols-4 gap-2">
-                  {calendarDays.slice(0, 60).map((d) => (
-                    <button
-                      key={d}
-                      type="button"
-                      onClick={() => applyDateToActive(d)}
-                      className="rounded-lg border border-slate-800 bg-slate-950/60 px-2 py-2 text-xs text-slate-200 hover:border-emerald-400 hover:bg-emerald-500/10"
-                      title={`Seç: ${d}`}
-                    >
-                      {d.slice(8, 10)}.{d.slice(5, 7)}
-                    </button>
-                  ))}
+
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Şehirler (rota)</label>
+                  <textarea
+                    value={citiesText}
+                    onChange={(e) => setCitiesText(e.target.value)}
+                    placeholder={`Örn:\nTrabzon\nRize\nArtvin\n\nveya\nAntalya, İstanbul`}
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100 h-[96px]"
+                  />
+                  <Hint>Birden fazla şehir yazabilirsin. Acenta gün gün planı kurar.</Hint>
+
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {CITY_SUGGESTIONS.slice(0, 10).map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => {
+                          const cur = citiesText.trim();
+                          const next = cur ? `${cur}\n${c}` : c;
+                          setCitiesText(next);
+                        }}
+                        className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[0.7rem] text-slate-200 hover:bg-white/10"
+                      >
+                        + {c}
+                      </button>
+                    ))}
+                  </div>
+
+                  <PromoStrip items={rotate2(promos.cities)} />
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Başlangıç</label>
+                  <input
+                    type="date"
+                    value={dateFrom}
+                    onChange={(e) => setDateFrom(e.target.value)}
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Bitiş</label>
+                  <input
+                    type="date"
+                    value={dateTo}
+                    onChange={(e) => setDateTo(e.target.value)}
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
+                <b className="text-emerald-200">Özet:</b> {nights} gece / {nights + 1} gün
+              </div>
+
+              <PromoStrip items={rotate2(promos.dates)} />
+
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setActiveStep(2)}
+                  className="rounded-xl bg-emerald-500 px-5 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400"
+                >
+                  Devam →
+                </button>
+              </div>
+            </section>
+          )}
+
+          {/* STEP 2 */}
+          {activeStep === 2 && (
+            <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5 shadow shadow-slate-950/40 space-y-3">
+              <h2 className="text-sm font-semibold text-slate-100">2) Konaklama & Kişi</h2>
+
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Yetişkin</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={paxAdults}
+                    onChange={(e) => setPaxAdults(Number(e.target.value || 1))}
+                    placeholder="2"
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Çocuk</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={paxChildren}
+                    onChange={(e) => syncChildrenAges(Number(e.target.value || 0))}
+                    placeholder="0"
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Oda</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={roomsCount}
+                    onChange={(e) => setRoomsCount(Number(e.target.value || 1))}
+                    placeholder="1"
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  />
+                </div>
+              </div>
+
+              {paxChildren > 0 && (
+                <div className="space-y-2">
+                  <label className="text-xs text-slate-200">Çocuk yaşları</label>
+                  <div className="flex flex-wrap gap-2">
+                    {childrenAges.map((age, idx) => (
+                      <div key={idx} className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 flex items-center gap-2">
+                        <span className="text-[0.7rem] text-slate-400">#{idx + 1}</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={17}
+                          value={age}
+                          onChange={(e) => {
+                            const v = Number(e.target.value || 0);
+                            setChildrenAges((prev) => prev.map((a, i) => (i === idx ? v : a)));
+                          }}
+                          className="w-20 rounded-md bg-slate-900 border border-slate-700 px-2 py-1 text-xs text-slate-100"
+                        />
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
-              <p className="muted mt-2">Aktif tarih alanı: <b className="text-slate-200">{activeDateField || "—"}</b></p>
-            </div>
-          </aside>
+              <PromoStrip items={rotate2(promos.pax)} />
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Konaklama gecesi</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={hotelNights}
+                    onChange={(e) => setHotelNights(Number(e.target.value || 1))}
+                    placeholder={`${nights}`}
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  />
+                  <Hint>Tur günleri farklı olabilir. Konaklama gecesini ayrı ayarlayabilirsin.</Hint>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Konaklama konsepti</label>
+                  <select
+                    value={hotelPref}
+                    onChange={(e) => setHotelPref(e.target.value as any)}
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  >
+                    {HOTEL_PREFS.map((h) => (
+                      <option key={h.key} value={h.key}>{h.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <PromoStrip items={rotate2(promos.hotel)} />
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Oda tipi</label>
+                  <select
+                    value={roomTypePref}
+                    onChange={(e) => setRoomTypePref(e.target.value as any)}
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  >
+                    {ROOM_TYPE_PREFS.map((r) => (
+                      <option key={r.key} value={r.key}>{r.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Yeme-içme</label>
+                  <select
+                    value={boardPref}
+                    onChange={(e) => setBoardPref(e.target.value as any)}
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  >
+                    {BOARD_PREFS.map((b) => (
+                      <option key={b.key} value={b.key}>{b.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex justify-between">
+                <button
+                  type="button"
+                  onClick={() => setActiveStep(1)}
+                  className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm text-slate-100 hover:bg-white/10"
+                >
+                  ← Geri
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveStep(3)}
+                  className="rounded-xl bg-emerald-500 px-5 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400"
+                >
+                  Devam →
+                </button>
+              </div>
+            </section>
+          )}
+
+          {/* STEP 3 */}
+          {activeStep === 3 && (
+            <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5 shadow shadow-slate-950/40 space-y-3">
+              <h2 className="text-sm font-semibold text-slate-100">3) Tur & Transfer</h2>
+
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={wantTours}
+                  onChange={(e) => setWantTours(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-600 bg-slate-900"
+                />
+                Tur istiyorum
+              </label>
+
+              {wantTours && (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <label className="text-xs text-slate-200">Tur sayısı</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={toursCount}
+                      onChange={(e) => setToursCount(Number(e.target.value || 0))}
+                      placeholder="2"
+                      className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-slate-200">Aktivite / tur tarzı</label>
+                    <textarea
+                      value={activities}
+                      onChange={(e) => setActivities(e.target.value)}
+                      placeholder="Örn: doğa, yayla, tekne turu, tarihi yerler, alışveriş..."
+                      className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100 h-[90px]"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <PromoStrip items={rotate2(promos.tour)} />
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Transfer</label>
+                  <select
+                    value={transferType}
+                    onChange={(e) => setTransferType(e.target.value as any)}
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  >
+                    <option value="none">İstemiyorum</option>
+                    <option value="oneway">Tek yön</option>
+                    <option value="roundtrip">Çift yön</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Transfer notu (ops.)</label>
+                  <textarea
+                    value={transferNotes}
+                    onChange={(e) => setTransferNotes(e.target.value)}
+                    placeholder="Örn: Trabzon Havalimanı → Otel / VIP olsun / saat aralığı..."
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100 h-[90px]"
+                  />
+                </div>
+              </div>
+
+              <PromoStrip items={rotate2(promos.transfer)} />
+
+              <div className="flex justify-between">
+                <button
+                  type="button"
+                  onClick={() => setActiveStep(2)}
+                  className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm text-slate-100 hover:bg-white/10"
+                >
+                  ← Geri
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveStep(4)}
+                  className="rounded-xl bg-emerald-500 px-5 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400"
+                >
+                  Devam →
+                </button>
+              </div>
+            </section>
+          )}
+
+          {/* STEP 4 */}
+          {activeStep === 4 && (
+            <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5 shadow shadow-slate-950/40 space-y-3">
+              <h2 className="text-sm font-semibold text-slate-100">4) Araç & Uçak</h2>
+
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={wantCar}
+                  onChange={(e) => setWantCar(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-600 bg-slate-900"
+                />
+                Araç istiyorum
+              </label>
+
+              {wantCar && (
+                <>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div className="space-y-1">
+                      <label className="text-xs text-slate-200">Araç tipi</label>
+                      <select
+                        value={vehicleClass}
+                        onChange={(e) => setVehicleClass(e.target.value as any)}
+                        className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                      >
+                        {VEHICLE_CLASS.map((v) => (
+                          <option key={v.key} value={v.key}>{v.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs text-slate-200">Kapasite</label>
+                      <input
+                        type="number"
+                        min={2}
+                        value={carSeats}
+                        onChange={(e) => setCarSeats(Number(e.target.value || 5))}
+                        placeholder="5"
+                        className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs text-slate-200">Sürücü sayısı</label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={driverCount}
+                        onChange={(e) => setDriverCount(Number(e.target.value || 1))}
+                        placeholder="1"
+                        className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <label className="text-xs text-slate-200">Ehliyet yılı (ops.)</label>
+                      <input
+                        type="number"
+                        min={1970}
+                        max={new Date().getFullYear()}
+                        value={licenseYear}
+                        onChange={(e) => setLicenseYear(e.target.value ? Number(e.target.value) : "")}
+                        placeholder="Örn: 2016"
+                        className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs text-slate-200">Ekstra (ops.)</label>
+                      <textarea
+                        value={rentalExtras}
+                        onChange={(e) => setRentalExtras(e.target.value)}
+                        placeholder="Örn: bebek koltuğu, zincir, navigasyon, ek sigorta..."
+                        className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100 h-[90px]"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              <PromoStrip items={rotate2(promos.car)} />
+
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={wantFlight}
+                  onChange={(e) => setWantFlight(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-600 bg-slate-900"
+                />
+                Uçak bileti dahil olsun
+              </label>
+
+              {wantFlight && (
+                <textarea
+                  value={flightNotes}
+                  onChange={(e) => setFlightNotes(e.target.value)}
+                  placeholder="Örn: İstanbul çıkışlı, sabah gidiş, akşam dönüş, yurt içi/yurt dışı..."
+                  className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100 h-[90px]"
+                />
+              )}
+
+              <PromoStrip items={rotate2(promos.flight)} />
+
+              <div className="flex justify-between">
+                <button
+                  type="button"
+                  onClick={() => setActiveStep(3)}
+                  className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm text-slate-100 hover:bg-white/10"
+                >
+                  ← Geri
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveStep(5)}
+                  className="rounded-xl bg-emerald-500 px-5 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400"
+                >
+                  Devam →
+                </button>
+              </div>
+            </section>
+          )}
+
+          {/* STEP 5 */}
+          {activeStep === 5 && (
+            <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5 shadow shadow-slate-950/40 space-y-3">
+              <h2 className="text-sm font-semibold text-slate-100">5) Bütçe, Notlar, Cevap Süresi & Gönder</h2>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Bütçe Min (₺)</label>
+                  <input
+                    value={budgetMin}
+                    onChange={(e) => setBudgetMin(e.target.value)}
+                    placeholder="Örn: 25000"
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Bütçe Max (₺)</label>
+                  <input
+                    value={budgetMax}
+                    onChange={(e) => setBudgetMax(e.target.value)}
+                    placeholder="Örn: 45000"
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  />
+                </div>
+              </div>
+
+              <PromoStrip items={rotate2(promos.budget)} />
+
+              <div className="space-y-1">
+                <label className="text-xs text-slate-200">Özel istekler / şartlar</label>
+                <textarea
+                  value={specialNotes}
+                  onChange={(e) => setSpecialNotes(e.target.value)}
+                  placeholder="Örn: şoförlü araç, sigarasız oda, iptal şartı, ödeme tipi, detaylı fiyat kırılımı istiyorum..."
+                  className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100 h-[120px]"
+                />
+              </div>
+
+              <PromoStrip items={rotate2(promos.notes)} />
+
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Ad Soyad *</label>
+                  <input
+                    value={contactName}
+                    onChange={(e) => setContactName(e.target.value)}
+                    placeholder="Örn: Yunus Emre"
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">Telefon *</label>
+                  <input
+                    value={contactPhone}
+                    onChange={(e) => setContactPhone(e.target.value)}
+                    placeholder="Örn: +90 532 123 45 67"
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-200">E-posta (ops.)</label>
+                  <input
+                    value={contactEmail}
+                    onChange={(e) => setContactEmail(e.target.value)}
+                    placeholder="Örn: yunus@mail.com"
+                    className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                  />
+                </div>
+              </div>
+
+              {/* Cevap süresi: dk/saat/gün + reklam */}
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4 space-y-2">
+                <p className="text-sm font-semibold text-slate-100">Acentaların cevap süresi</p>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <label className="text-xs text-slate-200">Süre miktarı</label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={responseAmount}
+                      onChange={(e) => setResponseAmount(Number(e.target.value || 1))}
+                      placeholder="Örn: 3"
+                      className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs text-slate-200">Birim</label>
+                    <select
+                      value={responseUnit}
+                      onChange={(e) => setResponseUnit(e.target.value as any)}
+                      className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
+                    >
+                      <option value="minutes">dakika</option>
+                      <option value="hours">saat</option>
+                      <option value="days">gün</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="text-[0.75rem] text-slate-400">
+                  Seçtiğin süre: <b className="text-slate-100">{responseAmount} {responseUnitLabelTR(responseUnit)}</b>
+                  {" "}→ sistem bunu <b className="text-slate-100">{responseDeadlineMinutes} dakika</b> olarak kaydeder.
+                </div>
+
+                <PromoStrip items={rotate2(promos.deadline)} />
+              </div>
+
+              <div className="flex justify-between">
+                <button
+                  type="button"
+                  onClick={() => setActiveStep(4)}
+                  className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm text-slate-100 hover:bg-white/10"
+                >
+                  ← Geri
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="rounded-xl bg-emerald-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60 shadow-lg shadow-emerald-500/25"
+                >
+                  {saving ? "Gönderiliyor..." : "Paket talebini gönder"}
+                </button>
+              </div>
+            </section>
+          )}
         </form>
 
         <style jsx global>{`
-          .card {
-            border-radius: 1rem;
-            border: 1px solid rgba(51,65,85,1);
-            background: rgba(2,6,23,0.75);
-            padding: 1rem;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-          }
-          .card-title {
-            font-size: 0.95rem;
-            font-weight: 700;
-            color: #e5e7eb;
-            margin-bottom: 0.75rem;
-          }
-          .label { font-size: 0.75rem; color: #e5e7eb; }
-          .muted { font-size: 0.75rem; color: rgba(148,163,184,1); margin-top: 0.35rem; }
-          .input {
-            width: 100%;
-            border-radius: 0.5rem;
-            background: rgba(15, 23, 42, 0.7);
-            border: 1px solid rgba(51, 65, 85, 1);
-            padding: 0.55rem 0.75rem;
-            color: #e5e7eb;
-            outline: none;
-            font-size: 0.85rem;
-          }
-          .input:focus { border-color: rgba(52, 211, 153, 0.8); }
-          .btn-primary {
-            border-radius: 0.6rem;
-            background: rgba(16,185,129,1);
-            color: rgba(2,6,23,1);
-            padding: 0.6rem 1rem;
-            font-weight: 800;
-            font-size: 0.85rem;
-          }
-          .btn-primary:hover { filter: brightness(1.05); }
-          .btn-secondary {
-            border-radius: 0.6rem;
-            border: 1px solid rgba(51,65,85,1);
-            background: rgba(15,23,42,0.6);
-            color: rgba(226,232,240,1);
-            padding: 0.6rem 1rem;
-            font-weight: 700;
-            font-size: 0.85rem;
-          }
-          .chip {
-            user-select: none;
-            cursor: pointer;
-            border-radius: 999px;
-            border: 1px solid rgba(51,65,85,1);
-            padding: 0.35rem 0.6rem;
-            font-size: 0.75rem;
-            color: rgba(226,232,240,1);
-            background: rgba(15,23,42,0.55);
-          }
-          .chip-on {
-            border-color: rgba(16,185,129,0.45);
-            background: rgba(16,185,129,0.10);
-            color: rgba(167,243,208,1);
-          }
-          .alert-success {
-            border-radius: 0.9rem;
-            border: 1px solid rgba(16,185,129,0.35);
-            background: rgba(16,185,129,0.12);
-            padding: 0.75rem 1rem;
-            color: rgba(167,243,208,1);
-          }
-          .alert-error {
-            border-radius: 0.9rem;
-            border: 1px solid rgba(239,68,68,0.35);
-            background: rgba(239,68,68,0.12);
-            padding: 0.75rem 1rem;
-            color: rgba(254,202,202,1);
+          @keyframes promoIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
           }
         `}</style>
       </div>
     </Protected>
-  );
-}
-
-function Field({ label, children }: { label: string; children: any }) {
-  return (
-    <div className="space-y-1">
-      <label className="label">{label}</label>
-      {children}
-    </div>
   );
 }

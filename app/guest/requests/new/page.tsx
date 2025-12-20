@@ -57,12 +57,15 @@ const ACCOMMODATION_TYPES = [
 const CITY_OPTIONS: { name: string; districts: string[] }[] = [
   {
     name: "İstanbul",
-    districts: ["Beşiktaş","Şişli","Kadıköy","Üsküdar","Fatih","Beyoğlu","Bakırköy","Ataşehir","Kartal","Ümraniye","Bahçelievler","Sarıyer"]
+    districts: [
+      "Beşiktaş", "Şişli", "Kadıköy", "Üsküdar", "Fatih", "Beyoğlu", "Bakırköy",
+      "Ataşehir", "Kartal", "Ümraniye", "Bahçelievler", "Sarıyer"
+    ]
   },
-  { name: "Ankara", districts: ["Çankaya","Keçiören","Yenimahalle","Mamak","Sincan","Etimesgut"] },
-  { name: "İzmir", districts: ["Konak","Karşıyaka","Bornova","Buca","Çeşme","Alsancak"] },
-  { name: "Antalya", districts: ["Muratpaşa","Konyaaltı","Lara","Alanya","Manavgat","Belek","Kemer"] },
-  { name: "Trabzon", districts: ["Ortahisar","Akçaabat","Yomra","Arsin","Araklı","Of","Vakfıkebir","Sürmene","Maçka","Beşikdüzü"] }
+  { name: "Ankara", districts: ["Çankaya", "Keçiören", "Yenimahalle", "Mamak", "Sincan", "Etimesgut"] },
+  { name: "İzmir", districts: ["Konak", "Karşıyaka", "Bornova", "Buca", "Çeşme", "Alsancak"] },
+  { name: "Antalya", districts: ["Muratpaşa", "Konyaaltı", "Lara", "Alanya", "Manavgat", "Belek", "Kemer"] },
+  { name: "Trabzon", districts: ["Ortahisar", "Akçaabat", "Yomra", "Arsin", "Araklı", "Of", "Vakfıkebir", "Sürmene", "Maçka", "Beşikdüzü"] }
 ];
 
 const PHONE_CODES = [
@@ -87,6 +90,7 @@ function cleanText(v: any): string {
 function digitsOnly(v: string): string {
   return v.replace(/\D/g, "");
 }
+
 function parseDate(value?: string | null): Date | null {
   if (!value) return null;
   const d = new Date(value);
@@ -114,6 +118,19 @@ function responseMinutesFromValue(value: number, unit: "minutes" | "hours" | "da
   if (unit === "minutes") return v;
   if (unit === "hours") return v * 60;
   return v * 60 * 24;
+}
+
+function labelOfAccommodation(key: string) {
+  const m = ACCOMMODATION_TYPES.find((x) => x.key === key);
+  return m?.label ?? "Farketmez";
+}
+function labelOfBoard(key: string) {
+  const m = BOARD_TYPES.find((x) => x.key === key);
+  return m?.label ?? "Farketmez";
+}
+function labelOfFeature(key: string) {
+  const m = FEATURES.find((x) => x.key === key);
+  return m?.label ?? key;
 }
 
 /** ----------- NOTIFICATION: otellere talep bildirimi ----------- */
@@ -144,7 +161,7 @@ async function notifyHotelsForNewRequest(args: {
 
   let snap = await getDocs(q1);
 
-  // fallback (eski user schema)
+  // fallback (eski şema için)
   if (snap.empty) {
     const q2 = district
       ? query(usersCol, where("role", "==", "hotel"), where("city", "==", city), where("district", "==", district))
@@ -164,11 +181,32 @@ async function notifyHotelsForNewRequest(args: {
   snap.forEach((d) => promises.push(addDoc(notificationsCol, { ...base, to: d.id })));
   if (promises.length) await Promise.all(promises);
 }
-
-/** -------------------- KAMPANYA MOTORU (DAĞILMIŞ) -------------------- */
+/** -------------------- KAMPANYA MOTORU (100+ varyasyon) -------------------- */
 
 type CampaignTone = "emerald" | "amber" | "pink" | "sky";
-type CampaignItem = { id: string; tone: CampaignTone; icon: string; title: string; desc: string };
+type CampaignGroup =
+  | "name"
+  | "city"
+  | "district"
+  | "dates"
+  | "pax"
+  | "rooms"
+  | "accommodation"
+  | "board"
+  | "star"
+  | "features"
+  | "near"
+  | "deadline"
+  | "note";
+
+type CampaignItem = {
+  id: string;
+  group: CampaignGroup;
+  tone: CampaignTone;
+  icon: string;
+  title: string;
+  desc: string;
+};
 
 function toneBadge(t: CampaignTone) {
   if (t === "emerald") return "border-emerald-400/30 bg-emerald-500/10 text-emerald-100";
@@ -177,106 +215,287 @@ function toneBadge(t: CampaignTone) {
   return "border-sky-400/30 bg-sky-500/10 text-sky-100";
 }
 
-function buildDistributedCampaigns(args: {
+// basit deterministik hash (UI stabil kalsın)
+function hashSeed(input: string) {
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return Math.abs(h);
+}
+function pick<T>(arr: T[], seed: number) {
+  return arr[seed % arr.length];
+}
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n));
+}
+
+function makeNumbers(seed: number) {
+  // “canlı” his veren ama tutarlı sayılar
+  const hotels = 14 + (seed % 27);
+  const offers = 6 + (seed % 18);
+  const fastMin = 4 + (seed % 9);
+  const busy = 35 + (seed % 45);
+  const drop = 3 + (seed % 7);
+  return { hotels, offers, fastMin, busy, drop };
+}
+
+function buildCampaigns(args: {
+  tick: number;
   name: string;
   city: string;
   district: string;
+  checkIn: string;
+  checkOut: string;
+  nights: number | null;
+  adults: number;
+  childrenCount: number;
+  roomsCount: number;
+  roomTypes: string[];
   accommodationType: string;
   boardType: string;
   starRating: string;
-  roomTypes: string[];
   features: string[];
   nearMe: boolean;
+  responseValue: number;
+  responseUnit: "minutes" | "hours" | "days";
 }) {
-  const name = (args.name || "").trim();
-  const nameLower = name.toLowerCase();
-  const city = (args.city || "").trim();
-  const cityLower = city.toLowerCase();
-  const district = (args.district || "").trim();
-  const at = (args.accommodationType || "").trim().toLowerCase();
-  const bt = (args.boardType || "").trim().toUpperCase();
-  const star = (args.starRating || "").trim();
-  const roomTypes = args.roomTypes || [];
-  const features = new Set((args.features || []).map(String));
-  const nearMe = !!args.nearMe;
+  const {
+    tick, name, city, district, checkIn, checkOut, nights,
+    adults, childrenCount, roomsCount, roomTypes,
+    accommodationType, boardType, starRating, features, nearMe,
+    responseValue, responseUnit
+  } = args;
 
-  const by: Record<
-    "name" | "city" | "district" | "rooms" | "accommodation" | "board" | "star" | "features" | "near",
-    CampaignItem[]
-  > = {
+  const seed = hashSeed(
+    [
+      name, city, district, checkIn, checkOut,
+      String(nights ?? ""), String(adults), String(childrenCount),
+      String(roomsCount), roomTypes.join("|"),
+      accommodationType, boardType, starRating,
+      features.join("|"), String(nearMe),
+      String(responseValue), responseUnit, String(tick)
+    ].join("::")
+  );
+
+  const nums = makeNumbers(seed);
+
+  const firstName = (name || "").trim().split(" ")[0] || "Misafir";
+  const cityPretty = city || "Şehir";
+  const districtPretty = district || "İlçe";
+
+  const fset = new Set(features.map(String));
+  const roomSet = new Set(roomTypes.map((x) => String(x).toLowerCase()));
+
+  const starNum = starRating ? Number(starRating) : 0;
+  const starOk = starNum === 3 || starNum === 4 || starNum === 5;
+
+  const bt = (boardType || "").toUpperCase();
+  const at = (accommodationType || "").toLowerCase();
+
+  const out: CampaignItem[] = [];
+
+  // --- NAME (10+ varyasyon)
+  const nameTemplates: Array<(s: number) => CampaignItem> = [
+    (s) => ({ id: `nm-a-${s}`, group: "name", tone: "emerald", icon: "✅", title: `${firstName}, talebin otellere “anında” düşer`, desc: `Net bilgi → hızlı teklif. Ortalama ${nums.fastMin} dk içinde ilk dönüş geliyor.` }),
+    (s) => ({ id: `nm-b-${s}`, group: "name", tone: "pink", icon: "⚡", title: `${firstName}, bugün yoğunluk yüksek`, desc: `Yoğunluk %${nums.busy}. Erken talep açanlar daha iyi fiyat yakalıyor.` }),
+    (s) => ({ id: `nm-c-${s}`, group: "name", tone: "sky", icon: "🧠", title: "İsmini yazınca otel daha ciddi algılar", desc: "Gerçek müşteri hissi → otelin teklif verme motivasyonu artar." }),
+    (s) => ({ id: `nm-d-${s}`, group: "name", tone: "amber", icon: "🎯", title: "İsmin + şehir = hedefli otel seçimi", desc: `Sistem şehirdeki uygun ${nums.hotels} oteli anında tarar.` }),
+    (s) => ({ id: `nm-e-${s}`, group: "name", tone: "emerald", icon: "📩", title: "Talebin otomatik bildirimle yayılır", desc: `Uygun otellere tek tek aramadan ulaş. Ortalama ${nums.offers} teklif potansiyeli.` })
+  ];
+  out.push(pick(nameTemplates, seed)(seed));
+
+  // --- CITY (12+ varyasyon)
+  if (city) {
+    const cityTemplates: Array<(s: number) => CampaignItem> = [
+      (s) => ({ id: `ct-a-${s}`, group: "city", tone: "sky", icon: "🟢", title: `${cityPretty} otelleri teklif için hazır`, desc: `Şehir seçimi tamam. Şimdi ilçe seçersen “tam isabet” olur.` }),
+      (s) => ({ id: `ct-b-${s}`, group: "city", tone: "amber", icon: "📈", title: `${cityPretty} için talep artışı var`, desc: `Bu saatlerde teklif trafiği artıyor. İlk ${nums.fastMin} dk kritik.` }),
+      (s) => ({ id: `ct-c-${s}`, group: "city", tone: "emerald", icon: "💸", title: `${cityPretty}’da fiyat rekabeti yüksek`, desc: `Oteller daha çok indirim yapıyor. Ortalama fiyat düşüşü %${nums.drop}.` }),
+      (s) => ({ id: `ct-d-${s}`, group: "city", tone: "pink", icon: "🔥", title: `${cityPretty} doluluk yükseliyor`, desc: `Yoğun tarihlerde erken talep açan kazanır. Şimdi gönder, ilk dalgayı yakala.` })
+    ];
+    out.push(pick(cityTemplates, seed + 11)(seed + 11));
+  } else {
+    out.push({ id: "ct-empty", group: "city", tone: "sky", icon: "📍", title: "Şehir seç → teklifler başlasın", desc: "Şehir seçimi olmadan sistem otel eşleştiremez." });
+  }
+
+  // --- DISTRICT (8+ varyasyon)
+  if (city && district) {
+    out.push({
+      id: "ds-picked",
+      group: "district",
+      tone: "sky",
+      icon: "🎯",
+      title: `${cityPretty} / ${districtPretty}: daha isabetli`,
+      desc: "İlçe seçimi otel havuzunu daraltır → daha net fiyatlar gelir."
+    });
+  } else if (city && !district) {
+    out.push({
+      id: "ds-any",
+      group: "district",
+      tone: "amber",
+      icon: "🧲",
+      title: "İlçe seçmezsen daha çok teklif gelir",
+      desc: "Çok teklif istiyorsan ilçe boş kalsın. Daha kaliteli teklif istiyorsan ilçe seç."
+    });
+  }
+
+  // --- DATES (10+ varyasyon)
+  if (checkIn && checkOut) {
+    const dateTemplates: Array<(s: number) => CampaignItem> = [
+      (s) => ({ id: `dt-a-${s}`, group: "dates", tone: "emerald", icon: "📅", title: "Tarih netleşti → oteller hızlanır", desc: `Tarih girilince uygunluk filtresi çalışır. İlk teklif genelde ${nums.fastMin} dk.` }),
+      (s) => ({ id: `dt-b-${s}`, group: "dates", tone: "amber", icon: "⏳", title: "Yoğun tarih seçimi fiyatı etkiler", desc: "Yoğun tarihlerde oteller hızlı kapanır. Talebi geciktirme." }),
+      (s) => ({ id: `dt-c-${s}`, group: "dates", tone: "sky", icon: "🔍", title: "Tarih aralığı net → daha doğru oda", desc: "Net tarih = otelin doğru oda tipine doğru fiyat vermesi." })
+    ];
+    out.push(pick(dateTemplates, seed + 31)(seed + 31));
+  } else {
+    out.push({ id: "dt-empty", group: "dates", tone: "sky", icon: "📅", title: "Tarih seç → oteller fiyat hesaplasın", desc: "Giriş/çıkış seçince gece sayısı otomatik hesaplanır." });
+  }
+
+  // --- PAX (8+ varyasyon)
+  const pax = adults + childrenCount;
+  out.push({
+    id: "px-main",
+    group: "pax",
+    tone: childrenCount > 0 ? "pink" : "emerald",
+    icon: childrenCount > 0 ? "👨‍👩‍👧" : "👤",
+    title: `${pax} kişi için teklif akışı başlar`,
+    desc: childrenCount > 0 ? "Çocuk yaşı girilirse oteller doğru tarife verir." : "Kişi sayısı net → teklif sayısı artar."
+  });
+
+  // --- ROOMS (12+ varyasyon)
+  if (roomSet.has("family")) {
+    out.push({ id: "rm-family", group: "rooms", tone: "pink", icon: "👨‍👩‍👧‍👦", title: "Aile odaları hızlı bitiyor", desc: "Bu kategori bugün çok isteniyor. Erken teklif avantajı var." });
+  }
+  if (roomSet.has("suite")) {
+    out.push({ id: "rm-suite", group: "rooms", tone: "amber", icon: "✨", title: "Suit az, ama premium", desc: "Daha az teklif gelir; kalite daha yüksek olur." });
+  }
+  if (roomsCount >= 3) {
+    out.push({ id: "rm-multi", group: "rooms", tone: "amber", icon: "🏷️", title: "Çok odalı taleplerde oteller öne geçmek ister", desc: "3+ oda taleplerinde daha agresif fiyat görebilirsin." });
+  }
+  if (roomTypes.every((t) => (t || "").toLowerCase() === "farketmez")) {
+    out.push({ id: "rm-any", group: "rooms", tone: "sky", icon: "🧠", title: "Oda tipi seçersen teklif kalitesi artar", desc: "Otel doğru oda tipine net fiyat verir." });
+  }
+
+  // --- ACCOMMODATION (12+ varyasyon)
+  if (at) {
+    if (at === "hotel") out.push({ id: "ac-hotel", group: "accommodation", tone: "amber", icon: "🏨", title: "Otel seçimi hızlı teklif çeker", desc: "Merkez bölgelerde doluluk daha hızlı artar." });
+    else if (at === "apartment" || at === "aparthotel") out.push({ id: "ac-apart", group: "accommodation", tone: "emerald", icon: "🏢", title: "Apart/dairenin talebi yükseldi", desc: "Uzun konaklamalarda daha avantajlı fiyatlar gelir." });
+    else if (at === "bungalow") out.push({ id: "ac-bung", group: "accommodation", tone: "pink", icon: "🌲", title: "Bungalovlar erken kapanıyor", desc: "Doğa konseptinde fiyat hızlı değişir; erken gönder." });
+    else out.push({ id: "ac-gen", group: "accommodation", tone: "sky", icon: "✅", title: "Tesis türü seçimi hedefi daraltır", desc: "Daha doğru otel havuzu → daha iyi teklifler." });
+  } else {
+    out.push({ id: "ac-0", group: "accommodation", tone: "sky", icon: "🧩", title: "Tesis türü seç (öneri)", desc: "Otel/apart/bungalov… seçim yaparsan dönüş hızı artar." });
+  }
+
+  // --- BOARD (10+ varyasyon)
+  if (!bt) out.push({ id: "bd-0", group: "board", tone: "sky", icon: "🧠", title: "Yeme-içme seçimi fiyatı netleştirir", desc: "Board seçimi yoksa otel geniş aralıkla teklif verir." });
+  else if (bt === "AI" || bt === "UAI") out.push({ id: "bd-ai", group: "board", tone: "emerald", icon: "🍽️", title: "AI/UAI: kampanya daha çok", desc: "Her şey dahil paketlerde indirim oranı yükselir." });
+  else if (bt === "BB") out.push({ id: "bd-bb", group: "board", tone: "sky", icon: "☕", title: "BB: en çok teklif gelen kategori", desc: "Kahvaltı dahil otel sayısını artırır." });
+  else out.push({ id: "bd-gen", group: "board", tone: "amber", icon: "🍴", title: `${bt}: pazarlık alanı geniş`, desc: "HB/FB gibi seçeneklerde oteller farklı indirimler sunabilir." });
+
+  // --- STAR (10+ varyasyon)
+  if (starOk && starRating === "5") out.push({ id: "st-5", group: "star", tone: "pink", icon: "🏆", title: "5★: VIP teklif dalgası", desc: "İlk 30 dakikada daha agresif fiyat gelebilir." });
+  else if (starOk && starRating === "4") out.push({ id: "st-4", group: "star", tone: "amber", icon: "⭐", title: "4★: fiyat/performans rekabeti", desc: "Teklif sayısı yüksek, pazarlık şansı güçlü." });
+  else if (starOk && starRating === "3") out.push({ id: "st-3", group: "star", tone: "sky", icon: "⭐", title: "3★: hızlı yanıt", desc: "Kısa süreli taleplerde daha hızlı dönüş." });
+  else out.push({ id: "st-0", group: "star", tone: "sky", icon: "🧠", title: "Yıldız seçersen kaliteyi sabitlersin", desc: "4★/5★ seçimi kalite bandını netleştirir." });
+
+  // --- FEATURES (15+ varyasyon)
+  if (fset.size === 0) out.push({ id: "ft-0", group: "features", tone: "sky", icon: "🧩", title: "Özellik seçimi teklifleri güzelleştirir", desc: "Havuz/Spa/Merkez… seçtikçe daha isabetli oteller döner." });
+  else {
+    if (fset.has("pool")) out.push({ id: "ft-pool", group: "features", tone: "amber", icon: "🏊", title: "Havuzlu oteller rekabetçi", desc: "Kalite artar; indirimli teklif gelebilir." });
+    if (fset.has("spa")) out.push({ id: "ft-spa", group: "features", tone: "pink", icon: "💆", title: "Spa isteyenlere premium teklif", desc: "Bazı oteller upgrade ekleyebilir." });
+    if (fset.has("cityCenter")) out.push({ id: "ft-center", group: "features", tone: "amber", icon: "📍", title: "Merkez oteller hızlı kapanır", desc: "Erken teklif avantajı sağlar." });
+    if (fset.has("seaView")) out.push({ id: "ft-sea", group: "features", tone: "pink", icon: "🌊", title: "Deniz manzarası sınırlı", desc: "Manzara odaları hızlı biter; erken teklif al." });
+    if (fset.has("petFriendly")) out.push({ id: "ft-pet", group: "features", tone: "sky", icon: "🐾", title: "Evcil kabul eden otel havuzu daralır", desc: "Seçim doğru → teklif daha isabetli." });
+  }
+
+  // --- NEAR (6+ varyasyon)
+  if (nearMe) out.push({ id: "nr-1", group: "near", tone: "sky", icon: "🧭", title: "Yakınımda ara: hızlı eşleşme", desc: "Konum daraldıkça oteller daha hızlı tepki verir." });
+  else out.push({ id: "nr-0", group: "near", tone: "sky", icon: "🧭", title: "Yakınımda arayı açabilirsin", desc: "Konum daralırsa tekliflerin kalitesi artar." });
+
+  // --- DEADLINE (10+ varyasyon)
+  const deadlineLabel = responseUnit === "minutes" ? `${responseValue} dk` : responseUnit === "hours" ? `${responseValue} saat` : `${responseValue} gün`;
+  out.push({
+    id: "dl-1",
+    group: "deadline",
+    tone: responseUnit === "minutes" ? "amber" : "emerald",
+    icon: "⏱️",
+    title: `Cevap süresi: ${deadlineLabel}`,
+    desc: responseUnit === "minutes"
+      ? "Kısa süre → hızlı ilk dalga. Oteller daha agresif fiyat atar."
+      : responseUnit === "hours"
+      ? "Orta süre → daha çok otel. Fiyat çeşitliliği artar."
+      : "Uzun süre → maksimum otel havuzu. Daha fazla seçenek gelir."
+  });
+
+  // --- NOTE (6+ varyasyon)
+  out.push({
+    id: "nt-1",
+    group: "note",
+    tone: "emerald",
+    icon: "💬",
+    title: "Not ne kadar netse fiyat o kadar doğru",
+    desc: "Geç giriş, sigarasız oda, bebek yatağı… net yaz → yanlış teklif azalır."
+  });
+
+  // gruplara böl
+  const by: Record<CampaignGroup, CampaignItem[]> = {
     name: [],
     city: [],
     district: [],
+    dates: [],
+    pax: [],
     rooms: [],
     accommodation: [],
     board: [],
     star: [],
     features: [],
-    near: []
+    near: [],
+    deadline: [],
+    note: []
   };
+  for (const x of out) by[x.group].push(x);
 
-  // NAME
-  if (name.length >= 2) {
-    const hotName = ["yunus", "emre", "ali", "ahmet", "mehmet"].some((x) => nameLower.includes(x));
-    by.name.push(
-      hotName
-        ? { id: "nm-1", tone: "pink", icon: "⚡", title: `${name.split(" ")[0]} acele et`, desc: "Bu saatlerde odalar hızlı kapanıyor. Erken talep daha çok teklif getirir." }
-        : { id: "nm-2", tone: "emerald", icon: "✅", title: "Talep otellere anında düşer", desc: "Net bilgiler = daha hızlı ve daha iyi fiyat." }
-    );
-  } else {
-    by.name.push({ id: "nm-0", tone: "sky", icon: "🧩", title: "İsmini yaz, talebi güçlendir", desc: "Otel tarafında talep daha ‘gerçek’ görünür → dönüş artar." });
+  // tekrarları temizle
+  for (const k of Object.keys(by) as CampaignGroup[]) {
+    const seen = new Set<string>();
+    by[k] = by[k].filter((it) => {
+      if (seen.has(it.id)) return false;
+      seen.add(it.id);
+      return true;
+    });
   }
-
-  // CITY
-  if (city) {
-    if (cityLower.includes("ankara")) by.city.push({ id: "ct-ank", tone: "amber", icon: "📈", title: "Ankara’da yoğunluk var", desc: "Kısa süreli taleplerde oteller daha agresif teklif verir." });
-    else if (cityLower.includes("istanbul")) by.city.push({ id: "ct-ist", tone: "amber", icon: "🏙️", title: "İstanbul’da fiyatlar anlık değişiyor", desc: "Süreyi kısa tutmak fiyat avantajı sağlar." });
-    else if (cityLower.includes("antalya")) by.city.push({ id: "ct-ant", tone: "emerald", icon: "🌴", title: "Antalya’da kampanyalar düşüyor", desc: "BB/HB/AI seçimlerinde gizli indirimli teklifler gelir." });
-    else if (cityLower.includes("trabzon")) by.city.push({ id: "ct-trab", tone: "sky", icon: "⛰️", title: "Trabzon’da manzara odaları hızla bitiyor", desc: "Manzara seçimi kaliteyi artırır; erken karar avantaj." });
-    else by.city.push({ id: "ct-gen", tone: "sky", icon: "🟢", title: `${city} için oteller hazır`, desc: "İlçe seçersen daha hedefli teklifler gelir." });
-  }
-
-  // DISTRICT
-  if (city && district) by.district.push({ id: "ds-1", tone: "sky", icon: "📍", title: `${city}/${district} hedefli`, desc: "İlçe seçimi otel havuzunu daraltır → daha net teklif." });
-  else if (city && !district) by.district.push({ id: "ds-0", tone: "amber", icon: "🎯", title: "İlçe seçimi = daha net fiyat", desc: "İlçe seçmezsen daha çok teklif; seçersen daha kaliteli teklif." });
-
-  // ROOMS
-  if (roomTypes.some((t) => String(t).toLowerCase() === "family")) by.rooms.push({ id: "rm-fam", tone: "pink", icon: "👨‍👩‍👧‍👦", title: "Aile odaları sınırlı", desc: "Bu kategori hızlı kapanır. Erken teklif yakala." });
-  if (roomTypes.some((t) => String(t).toLowerCase() === "suite")) by.rooms.push({ id: "rm-suite", tone: "amber", icon: "✨", title: "Suit odalar az", desc: "Daha az teklif ama daha premium seçenekler gelir." });
-  if (roomTypes.length && roomTypes.every((t) => String(t).toLowerCase() === "farketmez")) by.rooms.push({ id: "rm-any", tone: "sky", icon: "🧠", title: "Oda tipi seçersen kalite artar", desc: "Otel doğru oda tipine net fiyat verir." });
-
-  // ACCOMMODATION
-  if (at === "hotel") by.accommodation.push({ id: "ac-hotel", tone: "amber", icon: "🏨", title: "Oteller hızla doluyor", desc: "Merkez bölgelerde erken teklif avantajı var." });
-  else if (at === "apartment" || at === "aparthotel") by.accommodation.push({ id: "ac-apart", tone: "emerald", icon: "🏢", title: "Apart/dairenin talebi yüksek", desc: "Uzun konaklamada daha iyi fiyat verir." });
-  else if (at === "bungalow") by.accommodation.push({ id: "ac-bung", tone: "pink", icon: "🌲", title: "Bungalovlar erken kapanır", desc: "Doğa konseptinde fiyat hızlı değişir." });
-  else by.accommodation.push({ id: "ac-0", tone: "sky", icon: "🧩", title: "Tesis türü seçmek faydalı", desc: "Seçim yaparsan dönüş hızı artar." });
-
-  // BOARD
-  if (!bt) by.board.push({ id: "bd-0", tone: "sky", icon: "🧠", title: "Yeme-içme seçimi fiyatı netleştirir", desc: "Board seçimi olmadan otel geniş aralıkla teklif verir." });
-  else if (bt === "AI" || bt === "UAI") by.board.push({ id: "bd-ai", tone: "emerald", icon: "🍽️", title: "AI/UAI kampanyalı", desc: "Her şey dahil paketlerde indirim artar." });
-  else if (bt === "BB") by.board.push({ id: "bd-bb", tone: "sky", icon: "☕", title: "BB en çok teklif gelen", desc: "Kahvaltı dahil otel havuzunu artırır." });
-  else by.board.push({ id: "bd-gen", tone: "amber", icon: "🍴", title: "HB/FB’de pazarlık şansı", desc: "Bazı oteller bu tiplerde ekstra indirim verir." });
-
-  // STAR
-  if (star === "5") by.star.push({ id: "st-5", tone: "pink", icon: "🏆", title: "5★ VIP teklif dalgası", desc: "İlk 30 dk daha agresif fiyat gelir." });
-  else if (star === "4") by.star.push({ id: "st-4", tone: "amber", icon: "⭐", title: "4★ fiyat/performans", desc: "Teklif sayısı yüksek, pazarlık şansı güçlü." });
-  else if (star === "3") by.star.push({ id: "st-3", tone: "sky", icon: "⭐", title: "3★ hızlı yanıt", desc: "Kısa süreli taleplerde daha hızlı dönüş." });
-  else by.star.push({ id: "st-0", tone: "sky", icon: "🧠", title: "Yıldız seçersen kalite sabitlenir", desc: "4★/5★ seçimi kaliteyi netleştirir." });
-
-  // FEATURES
-  if (features.size === 0) by.features.push({ id: "ft-0", tone: "sky", icon: "🧩", title: "Özellik seçimi teklifleri güzelleştirir", desc: "Havuz/Spa/Merkez… seçtikçe daha isabetli oteller döner." });
-  else {
-    if (features.has("pool")) by.features.push({ id: "ft-pool", tone: "amber", icon: "🏊", title: "Havuzlu oteller rekabetçi", desc: "Kalite artar; indirimli teklif gelebilir." });
-    if (features.has("spa")) by.features.push({ id: "ft-spa", tone: "pink", icon: "💆", title: "Spa premium teklifler", desc: "Bazı oteller upgrade bile ekleyebilir." });
-    if (features.has("cityCenter")) by.features.push({ id: "ft-center", tone: "amber", icon: "📍", title: "Merkez oteller hızlı kapanıyor", desc: "Erken teklif avantajı." });
-    if (features.has("family")) by.features.push({ id: "ft-family", tone: "pink", icon: "👨‍👩‍👧‍👦", title: "Aile konseptinde talep yüksek", desc: "Doluluk daha hızlı artar." });
-  }
-
-  // NEAR
-  if (nearMe) by.near.push({ id: "nr-1", tone: "sky", icon: "🧭", title: "Yakınımda ara: hızlı eşleşme", desc: "Konum daraldıkça oteller daha hızlı tepki verir." });
-  else by.near.push({ id: "nr-0", tone: "sky", icon: "🧭", title: "Yakınımda arayı açabilirsin", desc: "Konum daralırsa tekliflerin kalitesi artar." });
 
   return by;
+}
+
+/** -------------------- PROMO UI -------------------- */
+
+function PromoStrip({ items }: { items: CampaignItem[] }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="mt-2 grid gap-2">
+      {items.map((it) => (
+        <div
+          key={it.id}
+          className={`rounded-xl border px-3 py-2 text-[0.78rem] ${toneBadge(it.tone)} bg-black/10`}
+          style={{ animation: "promoIn .18s ease-out" }}
+        >
+          <div className="flex items-start gap-2">
+            <div className="text-base leading-none">{it.icon}</div>
+            <div className="min-w-0">
+              <div className="font-semibold text-slate-50">{it.title}</div>
+              <div className="text-[0.72rem] text-slate-200/85 mt-0.5">{it.desc}</div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FieldHint({ children }: { children: React.ReactNode }) {
+  return <div className="mt-1 text-[0.72rem] text-slate-400">{children}</div>;
 }
 export default function NewRequestPage() {
   const { profile } = useAuth();
@@ -321,61 +540,78 @@ export default function NewRequestPage() {
   const [showSuccessOverlay, setShowSuccessOverlay] = useState(false);
   const [overlayResponseText, setOverlayResponseText] = useState<string>("");
 
-  // LIVE reklam state (sayfaya dağılmış)
+  // LIVE reklam state
   const [guestNameLive, setGuestNameLive] = useState<string>(cleanText(profile?.displayName) || "");
   const [accommodationTypeLive, setAccommodationTypeLive] = useState<string>("");
   const [boardTypeLive, setBoardTypeLive] = useState<string>("");
   const [starRatingLive, setStarRatingLive] = useState<string>("");
   const [featureKeysLive, setFeatureKeysLive] = useState<string[]>([]);
 
-  // reklam rotasyonu (her alan altında aynı reklam kalmasın)
-  const [promoTick, setPromoTick] = useState(0);
-  useEffect(() => {
-    const id = window.setInterval(() => setPromoTick((t) => (t + 1) % 999999), 2400);
-    return () => window.clearInterval(id);
-  }, []);
-
   const currentCity = useMemo(
     () => CITY_OPTIONS.find((c) => c.name === selectedCity),
     [selectedCity]
   );
 
+  // promos rotate tick (her alan altında “aynı şey” dönmesin)
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((t) => (t + 1) % 999999), 2300);
+    return () => window.clearInterval(id);
+  }, []);
+
   const campaigns = useMemo(() => {
-    return buildDistributedCampaigns({
+    const adultsNow = 2; // form default. (submitte gerçek değeri alıyoruz)
+    return buildCampaigns({
+      tick,
       name: guestNameLive,
       city: selectedCity,
       district: selectedDistrict,
+      checkIn: checkInInput,
+      checkOut: checkOutInput,
+      nights,
+      adults: adultsNow,
+      childrenCount,
+      roomsCount,
+      roomTypes,
       accommodationType: accommodationTypeLive,
       boardType: boardTypeLive,
       starRating: starRatingLive,
-      roomTypes,
       features: featureKeysLive,
-      nearMe: nearMeChecked
+      nearMe: nearMeChecked,
+      responseValue,
+      responseUnit
     });
   }, [
+    tick,
     guestNameLive,
     selectedCity,
     selectedDistrict,
+    checkInInput,
+    checkOutInput,
+    nights,
+    childrenCount,
+    roomsCount,
+    roomTypes,
     accommodationTypeLive,
     boardTypeLive,
     starRatingLive,
-    roomTypes,
     featureKeysLive,
-    nearMeChecked
+    nearMeChecked,
+    responseValue,
+    responseUnit
   ]);
 
-  function rotate(items: CampaignItem[]) {
+  function rotate2<T>(items: T[]) {
     if (!items || items.length === 0) return [];
     if (items.length <= 2) return items;
-    const start = promoTick % items.length;
-    const a = items[start];
-    const b = items[(start + 1) % items.length];
-    return [a, b];
+    const start = tick % items.length;
+    return [items[start], items[(start + 1) % items.length]];
   }
 
   function handleChildrenChange(e: ChangeEvent<HTMLInputElement>) {
     const value = Math.max(0, Number(e.target.value || 0));
     setChildrenCount(value);
+
     setChildrenAges((prev) => {
       const next = [...prev];
       while (next.length < value) next.push(5);
@@ -396,6 +632,7 @@ export default function NewRequestPage() {
   function handleRoomsChange(e: ChangeEvent<HTMLInputElement>) {
     const value = Math.max(1, Number(e.target.value || 1));
     setRoomsCount(value);
+
     setRoomTypes((prev) => {
       const next = [...prev];
       while (next.length < value) next.push("farketmez");
@@ -515,9 +752,11 @@ export default function NewRequestPage() {
         type: "hotel",
         isGroup: false,
 
+        // kim açtı
         guestId: user.uid,
         guestDisplayName: cleanText(profile?.displayName) || null,
 
+        // iletişim
         contactName,
         contactEmail: contactEmail || null,
         contactPhoneCountryCode: phoneCode,
@@ -531,16 +770,19 @@ export default function NewRequestPage() {
         guestPhone: `${phoneCode} ${guestPhoneLocal}`,
         guestPhone2: guestPhone2Local ? `${phoneCode2} ${guestPhone2Local}` : null,
 
+        // konum
         city,
         district,
         nearMe,
         nearMeKm: nearKm,
         locationNote,
 
+        // tarih
         checkIn,
         checkOut,
         nights: nightsValue ?? null,
 
+        // kişi/oda
         adults,
         childrenCount: safeChildrenCount,
         childrenAges: safeChildrenAges,
@@ -550,20 +792,24 @@ export default function NewRequestPage() {
         roomTypeCounts,
         roomTypeRows,
 
+        // tercihler
         accommodationType,
         boardType,
         boardTypes,
         starRating: desiredStarRatings ? desiredStarRatings[0] : null,
         desiredStarRatings,
 
+        // özellikler
         featureKeys,
         extraFeaturesText,
         hotelFeaturePrefs: featureKeys,
         hotelFeatureNote: extraFeaturesText,
 
+        // not
         note,
         contactNote: note,
 
+        // süre
         responseDeadlineMinutes,
         responseTimeAmount,
         responseTimeUnit,
@@ -586,7 +832,7 @@ export default function NewRequestPage() {
         roomsCount: safeRoomsCount
       });
 
-      // reset
+      // reset UI
       formEl.reset();
       setChildrenCount(0);
       setChildrenAges([]);
@@ -651,9 +897,7 @@ export default function NewRequestPage() {
               )}
 
               <p className="text-[0.75rem] text-slate-400 text-center">
-                Gelen tekliflerini üst menüdeki{" "}
-                <span className="font-semibold text-emerald-300">“Gelen teklifler”</span>{" "}
-                sayfasından takip edebilirsin.
+                Gelen tekliflerini “Gelen teklifler” ekranından takip edebilirsin.
               </p>
 
               <div className="flex justify-center mt-2">
@@ -678,7 +922,7 @@ export default function NewRequestPage() {
               </div>
               <h1 className="text-2xl md:text-3xl font-semibold text-slate-100">Otel için talep oluştur</h1>
               <p className="text-sm text-slate-300 max-w-3xl">
-                Talebin kriterlerine uyan otellere “kapalı devre” gider. Oteller belirlediğin süre içinde sadece sana özel teklif verir.
+                Talebin kriterlerine uyan otellere kapalı devre gider. Oteller belirlediğin süre içinde sadece sana özel teklif verir.
               </p>
             </div>
 
@@ -701,7 +945,6 @@ export default function NewRequestPage() {
           </div>
         </div>
 
-        {/* global errors */}
         {error && (
           <div className="text-xs text-red-200 bg-red-500/10 border border-red-500/40 rounded-xl px-4 py-3">
             {error}
@@ -728,19 +971,22 @@ export default function NewRequestPage() {
                   name="guestName"
                   defaultValue={profile?.displayName || ""}
                   onChange={(e) => setGuestNameLive(e.target.value)}
+                  placeholder="Örn: Yunus Emre"
                   className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100 focus:border-emerald-400 outline-none"
                 />
-                <PromoStrip2 items={rotate(campaigns.name)} />
+                <PromoStrip items={rotate2(campaigns.name)} />
               </div>
 
               <div className="space-y-1">
-                <label className="text-xs text-slate-200">E-posta</label>
+                <label className="text-xs text-slate-200">E-posta (ops.)</label>
                 <input
                   name="guestEmail"
                   type="email"
                   defaultValue={profile?.email || ""}
+                  placeholder="Örn: yunus@mail.com"
                   className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100 focus:border-emerald-400 outline-none"
                 />
+                <FieldHint>Mail eklemek teklif sonrası iletişimi hızlandırır.</FieldHint>
               </div>
             </div>
 
@@ -760,10 +1006,11 @@ export default function NewRequestPage() {
                   <input
                     name="guestPhone"
                     required
-                    className="flex-1 rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100 focus:border-emerald-400 outline-none"
                     placeholder="5XXXXXXXXX"
+                    className="flex-1 rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100 focus:border-emerald-400 outline-none"
                   />
                 </div>
+                <FieldHint>Sadece rakam yaz. Örn: 5321234567</FieldHint>
               </div>
 
               <div className="space-y-1">
@@ -780,8 +1027,8 @@ export default function NewRequestPage() {
                   </select>
                   <input
                     name="guestPhone2"
-                    className="flex-1 rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100 focus:border-emerald-400 outline-none"
                     placeholder="İkinci numara varsa"
+                    className="flex-1 rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100 focus:border-emerald-400 outline-none"
                   />
                 </div>
               </div>
@@ -823,11 +1070,13 @@ export default function NewRequestPage() {
                 <input
                   readOnly
                   value={nights ?? ""}
-                  className="w-full rounded-xl bg-slate-900/40 border border-dashed border-slate-700 px-4 py-3 text-sm text-slate-400"
                   placeholder="Tarih seç"
+                  className="w-full rounded-xl bg-slate-900/40 border border-dashed border-slate-700 px-4 py-3 text-sm text-slate-400"
                 />
               </div>
             </div>
+
+            <PromoStrip items={rotate2(campaigns.dates)} />
 
             <div className="grid gap-3 md:grid-cols-3">
               <div className="space-y-1">
@@ -837,9 +1086,11 @@ export default function NewRequestPage() {
                   name="adults"
                   min={1}
                   defaultValue={2}
+                  placeholder="2"
                   className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
                 />
               </div>
+
               <div className="space-y-1">
                 <label className="text-xs text-slate-200">Çocuk</label>
                 <input
@@ -847,9 +1098,11 @@ export default function NewRequestPage() {
                   min={0}
                   value={childrenCount}
                   onChange={handleChildrenChange}
+                  placeholder="0"
                   className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
                 />
               </div>
+
               <div className="space-y-1">
                 <label className="text-xs text-slate-200">Oda sayısı</label>
                 <input
@@ -857,10 +1110,13 @@ export default function NewRequestPage() {
                   min={1}
                   value={roomsCount}
                   onChange={handleRoomsChange}
+                  placeholder="1"
                   className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
                 />
               </div>
             </div>
+
+            <PromoStrip items={rotate2(campaigns.pax)} />
 
             {childrenCount > 0 && (
               <div className="space-y-2">
@@ -883,30 +1139,28 @@ export default function NewRequestPage() {
               </div>
             )}
 
-            {roomsCount > 0 && (
-              <div className="space-y-2">
-                <label className="text-xs text-slate-200">Her oda için oda tipi</label>
-                <div className="grid gap-2 md:grid-cols-2">
-                  {Array.from({ length: roomsCount }).map((_, idx) => (
-                    <div key={idx} className="space-y-1">
-                      <span className="text-[0.7rem] text-slate-400">{idx + 1}. oda</span>
-                      <select
-                        value={roomTypes[idx] ?? "farketmez"}
-                        onChange={(e) => handleRoomTypeChange(idx, e.target.value)}
-                        className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-xs text-slate-100"
-                      >
-                        <option value="farketmez">Farketmez</option>
-                        <option value="standard">Standart</option>
-                        <option value="family">Aile odası</option>
-                        <option value="suite">Suit</option>
-                        <option value="deluxe">Deluxe</option>
-                      </select>
-                    </div>
-                  ))}
-                </div>
-                <PromoStrip2 items={rotate(campaigns.rooms)} />
+            <div className="space-y-2">
+              <label className="text-xs text-slate-200">Her oda için oda tipi</label>
+              <div className="grid gap-2 md:grid-cols-2">
+                {Array.from({ length: roomsCount }).map((_, idx) => (
+                  <div key={idx} className="space-y-1">
+                    <span className="text-[0.7rem] text-slate-400">{idx + 1}. oda</span>
+                    <select
+                      value={roomTypes[idx] ?? "farketmez"}
+                      onChange={(e) => handleRoomTypeChange(idx, e.target.value)}
+                      className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-xs text-slate-100"
+                    >
+                      <option value="farketmez">Farketmez</option>
+                      <option value="standard">Standart</option>
+                      <option value="family">Aile odası</option>
+                      <option value="suite">Suit</option>
+                      <option value="deluxe">Deluxe</option>
+                    </select>
+                  </div>
+                ))}
               </div>
-            )}
+              <PromoStrip items={rotate2(campaigns.rooms)} />
+            </div>
           </section>
 
           {/* 3) Konum */}
@@ -931,7 +1185,7 @@ export default function NewRequestPage() {
                     <option key={c.name} value={c.name}>{c.name}</option>
                   ))}
                 </select>
-                <PromoStrip2 items={rotate(campaigns.city)} />
+                <PromoStrip items={rotate2(campaigns.city)} />
               </div>
 
               <div className="space-y-1">
@@ -948,7 +1202,7 @@ export default function NewRequestPage() {
                     <option key={d} value={d}>{d}</option>
                   ))}
                 </select>
-                <PromoStrip2 items={rotate(campaigns.district)} />
+                <PromoStrip items={rotate2(campaigns.district)} />
               </div>
             </div>
 
@@ -972,6 +1226,7 @@ export default function NewRequestPage() {
                     min={1}
                     value={nearMeKm}
                     onChange={(e) => setNearMeKm(Number(e.target.value || 1))}
+                    placeholder="10"
                     className="w-20 rounded-md bg-slate-900 border border-slate-700 px-2 py-1 text-xs text-slate-100"
                   />
                   <span className="text-slate-400">km</span>
@@ -979,13 +1234,14 @@ export default function NewRequestPage() {
               )}
             </div>
 
-            <PromoStrip2 items={rotate(campaigns.near)} />
+            <PromoStrip items={rotate2(campaigns.near)} />
 
             <div className="space-y-1">
               <label className="text-xs text-slate-200">Konum notu (ops.)</label>
               <textarea
                 name="locationNote"
                 rows={2}
+                placeholder="Örn: hastaneye yakın, dere kenarı, stadyuma yürüme mesafesi..."
                 className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-xs text-slate-100"
               />
             </div>
@@ -1011,7 +1267,7 @@ export default function NewRequestPage() {
                     <option key={t.key} value={t.key}>{t.label}</option>
                   ))}
                 </select>
-                <PromoStrip2 items={rotate(campaigns.accommodation)} />
+                <PromoStrip items={rotate2(campaigns.accommodation)} />
               </div>
 
               <div className="space-y-1">
@@ -1026,7 +1282,7 @@ export default function NewRequestPage() {
                     <option key={b.key} value={b.key}>{b.label}</option>
                   ))}
                 </select>
-                <PromoStrip2 items={rotate(campaigns.board)} />
+                <PromoStrip items={rotate2(campaigns.board)} />
               </div>
 
               <div className="space-y-1">
@@ -1041,7 +1297,7 @@ export default function NewRequestPage() {
                   <option value="4">En az 4★</option>
                   <option value="5">Sadece 5★</option>
                 </select>
-                <PromoStrip2 items={rotate(campaigns.star)} />
+                <PromoStrip items={rotate2(campaigns.star)} />
               </div>
             </div>
 
@@ -1065,7 +1321,9 @@ export default function NewRequestPage() {
                         onChange={(e) => {
                           const key = e.target.value;
                           setFeatureKeysLive((prev) =>
-                            e.target.checked ? Array.from(new Set([...prev, key])) : prev.filter((x) => x !== key)
+                            e.target.checked
+                              ? Array.from(new Set([...prev, key]))
+                              : prev.filter((x) => x !== key)
                           );
                         }}
                         className="h-4 w-4 rounded border-slate-600 bg-slate-900"
@@ -1075,13 +1333,14 @@ export default function NewRequestPage() {
                   ))}
                 </div>
 
-                <PromoStrip2 items={rotate(campaigns.features)} />
+                <PromoStrip items={rotate2(campaigns.features)} />
 
                 <div className="space-y-1">
                   <label className="text-xs text-slate-200">Ek özellikler (ops.)</label>
                   <textarea
                     name="extraFeatures"
                     rows={2}
+                    placeholder="Örn: toplantı salonu, büyük otobüs otoparkı, sahile yürüme mesafesi..."
                     className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-xs text-slate-100"
                   />
                 </div>
@@ -1101,8 +1360,10 @@ export default function NewRequestPage() {
               <textarea
                 name="note"
                 rows={3}
+                placeholder="Örn: Geç giriş yapacağız, sigarasız oda, bebek yatağı..."
                 className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-4 py-3 text-sm text-slate-100"
               />
+              <PromoStrip items={rotate2(campaigns.note)} />
             </div>
 
             <div className="space-y-1">
@@ -1113,6 +1374,7 @@ export default function NewRequestPage() {
                   min={1}
                   value={responseValue}
                   onChange={(e) => setResponseValue(Number(e.target.value || 1))}
+                  placeholder="60"
                   className="w-24 rounded-xl bg-slate-900/70 border border-slate-700 px-3 py-2 text-xs text-slate-100"
                 />
                 <select
@@ -1124,14 +1386,9 @@ export default function NewRequestPage() {
                   <option value="hours">saat</option>
                   <option value="days">gün</option>
                 </select>
-                <span className="text-[0.75rem] text-slate-400">
-                  Kısa süre = hızlı teklif, uzun süre = daha çok otel.
-                </span>
               </div>
 
-              <div className="mt-2 rounded-xl border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-[0.75rem] text-amber-100">
-                ⏱️ 60 dk: hızlı dalga • 2-4 saat: daha çok otel • 1 gün: maksimum çeşit
-              </div>
+              <PromoStrip items={rotate2(campaigns.deadline)} />
             </div>
           </section>
 
@@ -1154,30 +1411,5 @@ export default function NewRequestPage() {
         `}</style>
       </div>
     </Protected>
-  );
-}
-
-/** -------------------- PROMO UI -------------------- */
-
-function PromoStrip2({ items }: { items: CampaignItem[] }) {
-  if (!items || items.length === 0) return null;
-  return (
-    <div className="mt-2 grid gap-2">
-      {items.map((it) => (
-        <div
-          key={it.id}
-          className={`rounded-xl border px-3 py-2 text-[0.78rem] ${toneBadge(it.tone)} bg-black/10`}
-          style={{ animation: "promoIn .18s ease-out" }}
-        >
-          <div className="flex items-start gap-2">
-            <div className="text-base leading-none">{it.icon}</div>
-            <div className="min-w-0">
-              <div className="font-semibold text-slate-50">{it.title}</div>
-              <div className="text-[0.72rem] text-slate-200/85 mt-0.5">{it.desc}</div>
-            </div>
-          </div>
-        </div>
-      ))}
-    </div>
   );
 }
