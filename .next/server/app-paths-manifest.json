@@ -1,3 +1,7 @@
 {
-  "/page": "app/page.js"
+  "/page": "app/page.js",
+  "/guest/requests/new/page": "app/guest/requests/new/page.js",
+  "/guest/group-request/page": "app/guest/group-request/page.js",
+  "/dashboard/guest/page": "app/dashboard/guest/page.js",
+  "/auth/login/page": "app/auth/login/page.js"
 }
