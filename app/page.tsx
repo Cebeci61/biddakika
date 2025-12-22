@@ -700,10 +700,11 @@ useEffect(() => {
             </div>
 
             {/* ✅ Türkiye haritası */}
-<TurkeyMap
+<PremiumTurkeyLiveMap
   tick={tick}
-  onPickCity={(city, tone) => setCityPanel({ city, tone })}
+  onRequireAuth={() => router.push("/auth/register")}
 />
+
 {/* ✅ Şehir paneli */}
 {cityPanel && (
   <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4">
@@ -969,6 +970,278 @@ useEffect(() => {
             animation-play-state: paused;
           }
         `}</style>
+      </div>
+    </div>
+  );
+}
+// ✅ PREMIUM TÜRKİYE CANLI HARİTASI (20+ şehir + ilçe)
+// app/page.tsx içine ekle (HomePage altında veya helper’ların altına)
+
+type MapKind = "talep" | "teklif" | "paket" | "odeme";
+type MapCity = {
+  key: string;
+  name: string;
+  kind: MapKind;
+  left: number;   // 0..100
+  top: number;    // 0..100
+  districts: string[];
+};
+
+function pillCls(kind: MapKind) {
+  if (kind === "talep") return "border-emerald-400/25 bg-emerald-500/10 text-emerald-100";
+  if (kind === "teklif") return "border-sky-400/25 bg-sky-500/10 text-sky-100";
+  if (kind === "paket") return "border-pink-400/25 bg-pink-500/10 text-pink-100";
+  return "border-amber-300/25 bg-amber-500/10 text-amber-100";
+}
+
+function dotCls(kind: MapKind) {
+  if (kind === "talep") return "bg-emerald-300/80 shadow-[0_0_40px_rgba(16,185,129,0.45)]";
+  if (kind === "teklif") return "bg-sky-300/80 shadow-[0_0_40px_rgba(56,189,248,0.45)]";
+  if (kind === "paket") return "bg-pink-300/80 shadow-[0_0_40px_rgba(244,114,182,0.45)]";
+  return "bg-amber-300/80 shadow-[0_0_40px_rgba(245,158,11,0.45)]";
+}
+
+function makeCityStats(seed: number) {
+  // daha “doğal” duran simülasyon
+  const baseTalep = 240 + (seed % 140);
+  const baseTeklif = 320 + (seed % 160);
+  const basePaket = 40 + (seed % 55);
+  const baseRez = 60 + (seed % 70);
+  return { talep: baseTalep, teklif: baseTeklif, paket: basePaket, rezervasyon: baseRez };
+}
+
+function PremiumTurkeyLiveMap({
+  tick,
+  onRequireAuth
+}: {
+  tick: number;
+  onRequireAuth?: () => void;
+}) {
+  const cities: MapCity[] = [
+    { key: "istanbul", name: "İstanbul", kind: "teklif", left: 22, top: 37, districts: ["Beşiktaş","Şişli","Kadıköy","Üsküdar","Beyoğlu","Ataşehir","Bakırköy"] },
+    { key: "ankara", name: "Ankara", kind: "talep", left: 45, top: 43, districts: ["Çankaya","Keçiören","Yenimahalle","Etimesgut","Mamak","Sincan"] },
+    { key: "izmir", name: "İzmir", kind: "paket", left: 13, top: 52, districts: ["Konak","Bornova","Karşıyaka","Çeşme","Seferihisar","Urla"] },
+    { key: "antalya", name: "Antalya", kind: "talep", left: 28, top: 73, districts: ["Konyaaltı","Muratpaşa","Lara","Alanya","Kemer","Belek"] },
+    { key: "bursa", name: "Bursa", kind: "teklif", left: 29, top: 43, districts: ["Nilüfer","Osmangazi","Yıldırım","Mudanya"] },
+    { key: "adana", name: "Adana", kind: "odeme", left: 56, top: 76, districts: ["Seyhan","Yüreğir","Çukurova","Sarıçam"] },
+    { key: "gaziantep", name: "Gaziantep", kind: "odeme", left: 67, top: 74, districts: ["Şahinbey","Şehitkamil"] },
+    { key: "trabzon", name: "Trabzon", kind: "teklif", left: 77, top: 36, districts: ["Ortahisar","Akçaabat","Yomra","Sürmene","Of"] },
+    { key: "rize", name: "Rize", kind: "talep", left: 82, top: 38, districts: ["Ardeşen","Çayeli","Pazar","Fındıklı"] },
+    { key: "samsun", name: "Samsun", kind: "odeme", left: 65, top: 35, districts: ["Atakum","İlkadım","Canik"] },
+    { key: "mugla", name: "Muğla", kind: "paket", left: 18, top: 70, districts: ["Bodrum","Marmaris","Fethiye","Datça","Ortaca"] },
+    { key: "eskisehir", name: "Eskişehir", kind: "talep", left: 38, top: 46, districts: ["Tepebaşı","Odunpazarı"] },
+    { key: "konya", name: "Konya", kind: "talep", left: 47, top: 60, districts: ["Selçuklu","Meram","Karatay"] },
+    { key: "kayseri", name: "Kayseri", kind: "teklif", left: 59, top: 57, districts: ["Melikgazi","Kocasinan","Talas"] },
+    { key: "nevsehir", name: "Nevşehir", kind: "paket", left: 56, top: 55, districts: ["Göreme","Ürgüp","Avanos"] },
+    { key: "mardin", name: "Mardin", kind: "odeme", left: 80, top: 78, districts: ["Artuklu","Midyat"] },
+    { key: "van", name: "Van", kind: "paket", left: 92, top: 56, districts: ["İpekyolu","Tuşba","Edremit"] },
+    { key: "erzurum", name: "Erzurum", kind: "talep", left: 84, top: 48, districts: ["Yakutiye","Palandöken","Aziziye"] },
+    { key: "canakkale", name: "Çanakkale", kind: "teklif", left: 12, top: 42, districts: ["Merkez","Bozcaada","Gökçeada"] },
+    { key: "amasya", name: "Amasya", kind: "talep", left: 62, top: 41, districts: ["Merkez","Taşova"] }
+  ];
+
+  const [selectedKey, setSelectedKey] = React.useState<string>("istanbul");
+  const [districtKey, setDistrictKey] = React.useState<string>(""); // seçili ilçe
+  const [hoverKey, setHoverKey] = React.useState<string | null>(null);
+
+  const selected = React.useMemo(
+    () => cities.find((c) => c.key === selectedKey) ?? cities[0],
+    [selectedKey]
+  );
+
+  const stats = React.useMemo(() => {
+    // şehir bazlı seed: tick + key hash
+    const seed = tick + selected.key.split("").reduce((s, ch) => s + ch.charCodeAt(0), 0);
+    return makeCityStats(seed);
+  }, [tick, selected.key]);
+
+  return (
+    <div className="rounded-3xl border border-white/10 bg-white/5 p-4 md:p-5 backdrop-blur shadow-[0_30px_120px_rgba(0,0,0,0.55)]">
+      {/* header */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <p className="text-sm md:text-base font-semibold text-white">Türkiye canlı harita</p>
+            <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-500/10 px-3 py-1 text-[0.7rem] text-emerald-100">
+              <span className="relative inline-flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400/70 opacity-75"></span>
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-300"></span>
+              </span>
+              LIVE
+            </span>
+          </div>
+          <p className="text-[0.75rem] text-slate-300">
+            Şehre tıkla → yoğunluk + ilçe listesi. (Simülasyon)
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <span className={`rounded-full border px-3 py-1 text-[0.7rem] ${pillCls("talep")}`}>talep</span>
+          <span className={`rounded-full border px-3 py-1 text-[0.7rem] ${pillCls("teklif")}`}>teklif</span>
+          <span className={`rounded-full border px-3 py-1 text-[0.7rem] ${pillCls("paket")}`}>paket</span>
+          <span className={`rounded-full border px-3 py-1 text-[0.7rem] ${pillCls("odeme")}`}>ödeme</span>
+        </div>
+      </div>
+
+      {/* map */}
+      <div className="relative mt-4 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/60">
+        {/* background grid */}
+        <div className="absolute inset-0 opacity-[0.10] [background-image:radial-gradient(rgba(255,255,255,0.45)_1px,transparent_1px)] [background-size:16px_16px]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(255,255,255,0.10),transparent_60%)]" />
+
+        {/* turkey silhouette (simple) */}
+        <svg viewBox="0 0 1000 420" className="absolute inset-0 h-full w-full opacity-[0.22]">
+          <path
+            d="M80 240 C120 170, 210 160, 320 175 C380 150, 460 150, 540 170 C640 140, 720 150, 800 190 C880 210, 920 250, 890 285 C850 330, 760 340, 680 322 C590 350, 520 345, 430 320 C320 350, 250 330, 180 300 C120 285, 70 270, 80 240 Z"
+            fill="rgba(255,255,255,0.8)"
+          />
+        </svg>
+
+        {/* dots */}
+        <div className="relative h-[220px] md:h-[260px]">
+          {cities.map((c) => {
+            const isSel = c.key === selectedKey;
+            const isHover = hoverKey === c.key;
+            return (
+              <button
+                key={c.key}
+                type="button"
+                onMouseEnter={() => setHoverKey(c.key)}
+                onMouseLeave={() => setHoverKey(null)}
+                onClick={() => {
+                  setSelectedKey(c.key);
+                  setDistrictKey("");
+                }}
+                className="absolute"
+                style={{ left: `${c.left}%`, top: `${c.top}%` }}
+              >
+                <span
+                  className={[
+                    "relative block h-3.5 w-3.5 rounded-full",
+                    dotCls(c.kind),
+                    "transition-transform duration-200",
+                    isSel ? "scale-[1.35]" : isHover ? "scale-[1.2]" : "scale-100"
+                  ].join(" ")}
+                />
+                {/* halo */}
+                <span
+                  className={[
+                    "pointer-events-none absolute left-1/2 top-1/2 h-10 w-10 -translate-x-1/2 -translate-y-1/2 rounded-full",
+                    isSel ? "opacity-100" : "opacity-0",
+                    "transition-opacity duration-200",
+                    c.kind === "talep"
+                      ? "bg-emerald-400/10"
+                      : c.kind === "teklif"
+                      ? "bg-sky-400/10"
+                      : c.kind === "paket"
+                      ? "bg-pink-400/10"
+                      : "bg-amber-400/10"
+                  ].join(" ")}
+                />
+                {/* label */}
+                <span
+                  className={[
+                    "absolute left-1/2 top-[16px] -translate-x-1/2 whitespace-nowrap rounded-full border px-2 py-0.5 text-[0.65rem]",
+                    "border-white/10 bg-black/25 text-slate-200 backdrop-blur",
+                    isSel || isHover ? "opacity-100" : "opacity-70"
+                  ].join(" ")}
+                >
+                  {c.name}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* district chips */}
+      <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="space-y-0.5">
+            <p className="text-sm font-semibold text-white">
+              {selected.name} • canlı panel
+            </p>
+            <p className="text-[0.75rem] text-slate-300">
+              İlçe seç → teklif kalitesi “daha hedefli” simüle edilir.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setDistrictKey("");
+              setSelectedKey("istanbul");
+            }}
+            className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-[0.75rem] text-slate-200 hover:bg-white/10"
+          >
+            Sıfırla
+          </button>
+        </div>
+
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setDistrictKey("")}
+            className={`rounded-full border px-3 py-1 text-[0.75rem] ${
+              !districtKey ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200" : "border-white/10 bg-white/0 text-slate-200 hover:bg-white/5"
+            }`}
+          >
+            Tüm ilçe
+          </button>
+
+          {selected.districts.map((d) => (
+            <button
+              key={d}
+              type="button"
+              onClick={() => setDistrictKey(d)}
+              className={`rounded-full border px-3 py-1 text-[0.75rem] ${
+                districtKey === d ? "border-sky-500/40 bg-sky-500/10 text-sky-200" : "border-white/10 bg-white/0 text-slate-200 hover:bg-white/5"
+              }`}
+            >
+              {d}
+            </button>
+          ))}
+        </div>
+
+        {/* panel (aynı mantık) */}
+        <div className="mt-4 grid gap-3 md:grid-cols-4">
+          <div className="rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3">
+            <p className="text-[0.7rem] text-slate-400">Talep</p>
+            <p className="text-xl font-extrabold text-white">{stats.talep}</p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3">
+            <p className="text-[0.7rem] text-slate-400">Teklif</p>
+            <p className="text-xl font-extrabold text-white">{stats.teklif}</p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3">
+            <p className="text-[0.7rem] text-slate-400">Paket</p>
+            <p className="text-xl font-extrabold text-white">{stats.paket}</p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3">
+            <p className="text-[0.7rem] text-slate-400">Rezervasyon</p>
+            <p className="text-xl font-extrabold text-white">{stats.rezervasyon}</p>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-xl border border-white/10 bg-black/10 px-3 py-2 text-[0.75rem] text-slate-200">
+          ✅ <b className="text-white">{selected.name}</b>
+          {districtKey ? (
+            <>
+              {" "} / <b className="text-white">{districtKey}</b>
+              {" "}ilçesinde “kapalı devre teklif” daha hızlı çalışır. Teklifleri görmek için kayıt olman gerekir.
+            </>
+          ) : (
+            <> şehrinde “kapalı devre teklif” daha hızlı çalışır. Teklifleri görmek için kayıt olman gerekir.</>
+          )}
+          {" "}
+          <button
+            type="button"
+            onClick={() => onRequireAuth?.()}
+            className="ml-2 underline underline-offset-2 text-emerald-200 hover:text-emerald-100"
+          >
+            Kayıt / Giriş
+          </button>
+        </div>
       </div>
     </div>
   );

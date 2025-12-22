@@ -991,22 +991,8 @@ export default function GuestGroupRequestPage() {
               </p>
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-slate-200">
-              <div className="flex items-center gap-8">
-                <div>
-                  <div className="text-slate-400">Gece</div>
-                  <div className="text-lg font-extrabold text-white">{nights}</div>
-                </div>
-                <div>
-                  <div className="text-slate-400">Oda</div>
-                  <div className="text-lg font-extrabold text-white">{roomsCount}</div>
-                </div>
-                <div>
-                  <div className="text-slate-400">İlçe</div>
-                  <div className="text-lg font-extrabold text-white">{selectedDistricts.length || "-"}</div>
-                </div>
-              </div>
-            </div>
+            
+            
           </div>
         </div>
 

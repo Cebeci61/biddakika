@@ -926,22 +926,12 @@ export default function NewRequestPage() {
               </p>
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-slate-200">
-              <div className="flex items-center justify-between gap-8">
-                <div>
-                  <div className="text-slate-400">Gece</div>
-                  <div className="text-lg font-extrabold text-white">{nights ?? "-"}</div>
-                </div>
-                <div>
-                  <div className="text-slate-400">Oda</div>
-                  <div className="text-lg font-extrabold text-white">{roomsCount}</div>
-                </div>
-                <div>
-                  <div className="text-slate-400">Çocuk</div>
-                  <div className="text-lg font-extrabold text-white">{childrenCount}</div>
-                </div>
-              </div>
-            </div>
+                
+                
+                
+                
+                
+                
           </div>
         </div>
 

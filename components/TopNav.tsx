@@ -213,8 +213,8 @@ export default function TopNav() {
   // TopNav.tsx içinde publicTabs
 const publicTabs = [
   { label: "Müşteri", hint: "otel talebi", href: "/otel-talebi" }, // ✅ burası
-  { label: "Otel", hint: "demo panel", href: "/demo/otel-gelen-talepler" },
-  { label: "Acenta", hint: "demo paket", href: "/demo/acentaya-gelen-paketler" }
+  { label: "Otel", hint: "demo", href: "/demo/otel" },
+  { label: "Acenta", hint: "demo", href: "/demo/acenta" }
 ];
 
   const displayName = profile?.displayName || profile?.email || "Hesabım";
