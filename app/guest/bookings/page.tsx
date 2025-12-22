@@ -1,9 +1,10 @@
 // app/guest/bookings/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState, FormEvent } from "react";
+import React, { useEffect, useMemo, useState, FormEvent } from "react";
 import { Protected } from "@/components/Protected";
 import { useAuth } from "@/context/AuthContext";
+
 import { getFirestoreDb } from "@/lib/firebase/client";
 import {
   collection,
@@ -15,8 +16,9 @@ import {
   serverTimestamp,
   doc,
   updateDoc,
-  orderBy,
-  onSnapshot
+  onSnapshot,
+  FieldPath,
+  documentId
 } from "firebase/firestore";
 
 type PaymentMethod = "card3d" | "payAtHotel";
@@ -29,6 +31,15 @@ interface RoomBreakdownItem {
   nightlyPrice?: number;
   totalPrice?: number;
 }
+
+/** ✅ Teklif fiyat geçmişi — voucher kanıt kısmı için */
+type PriceHistoryItem = {
+  actor: "hotel" | "guest";
+  kind: "initial" | "counter" | "update";
+  price: number;
+  note?: string | null;
+  createdAt?: any; // Timestamp
+};
 
 interface Booking {
   id: string;
@@ -49,6 +60,7 @@ interface Booking {
   hotelDistrict?: string | null;
   hotelLocationUrl?: string | null;
   hotelAddress?: string | null;
+  hotelImageUrls?: string[] | null;
 
   // misafirin talep ettiği konum (request’ten)
   requestCity?: string;
@@ -80,6 +92,9 @@ interface Booking {
 
   hasReview?: boolean;
   createdAt?: Timestamp;
+
+  // ✅ voucher kanıtı için (offer’dan)
+  offerPriceHistory?: PriceHistoryItem[] | null;
 }
 
 interface RequestDoc {
@@ -101,6 +116,7 @@ interface OfferDoc {
   cancellationPolicyDays?: number | null;
   commissionRate?: number | null;
   roomBreakdown?: RoomBreakdownItem[];
+  priceHistory?: PriceHistoryItem[];
 }
 
 type HotelRoomType = {
@@ -131,7 +147,8 @@ interface HotelDoc {
   district?: string | null;
   locationUrl?: string | null;
   address?: string | null;
-  roomTypes?: HotelRoomType[]; // otel profilinden
+  imageUrls?: string[]; // ✅ otel görselleri (voucher)
+  roomTypes?: HotelRoomType[];
 }
 
 interface BookingMessage {
@@ -158,18 +175,15 @@ function parseDate(value?: string | null): Date | null {
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
 }
-
 function normalized(d: Date) {
   const n = new Date(d);
   n.setHours(0, 0, 0, 0);
   return n;
 }
-
 function diffInDays(a: Date, b: Date) {
   const ms = normalized(a).getTime() - normalized(b).getTime();
   return Math.floor(ms / (1000 * 60 * 60 * 24));
 }
-
 function calcNights(checkIn?: string | null, checkOut?: string | null) {
   const ci = parseDate(checkIn);
   const co = parseDate(checkOut);
@@ -177,32 +191,27 @@ function calcNights(checkIn?: string | null, checkOut?: string | null) {
   const d = diffInDays(co, ci);
   return d > 0 ? d : 1;
 }
-
 function bookingIsPast(booking: Booking): boolean {
   const out = parseDate(booking.checkOut);
   if (!out) return false;
   return diffInDays(out, new Date()) < 0;
 }
-
 function paymentMethodText(method: string) {
   if (method === "card3d") return "3D Secure kart";
   if (method === "payAtHotel") return "Otelde ödeme";
   return method;
 }
-
 function derivedStatus(b: Booking): "active" | "cancelled" | "completed" {
   if (b.status === "cancelled") return "cancelled";
   if (b.status === "active" && bookingIsPast(b)) return "completed";
   return "active";
 }
-
 function statusText(booking: Booking): string {
   const st = derivedStatus(booking);
   if (st === "cancelled") return "İptal edildi";
   if (st === "completed") return "Tamamlandı";
   return "Aktif";
 }
-
 function statusClass(booking: Booking): string {
   const st = derivedStatus(booking);
   if (st === "cancelled") return "bg-red-500/10 text-red-300 border-red-500/40";
@@ -281,6 +290,35 @@ function findRoomTypeByName(hotel: HotelDoc | undefined, name: string) {
     null
   );
 }
+
+/** ✅ index istemesin diye "in" chunk */
+function chunk<T>(arr: T[], size: number) {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+/** ✅ check-in’e kalan süre */
+function checkInCountdown(checkInISO: string) {
+  const ci = parseDate(checkInISO);
+  if (!ci) return { label: "—", tone: "slate" as const };
+  const now = new Date();
+  const ms = ci.getTime() - now.getTime();
+  const days = Math.floor(ms / 86400000);
+  const hours = Math.floor((ms % 86400000) / 3600000);
+
+  if (ms <= 0) return { label: "Giriş zamanı", tone: "emerald" as const };
+  if (days === 0) return { label: `${hours} saat kaldı`, tone: "amber" as const };
+  if (days <= 2) return { label: `${days} gün kaldı`, tone: "amber" as const };
+  return { label: `${days} gün kaldı`, tone: "slate" as const };
+}
+
+function pillTone(tone: "emerald" | "amber" | "red" | "slate") {
+  if (tone === "emerald") return "border-emerald-500/35 bg-emerald-500/10 text-emerald-200";
+  if (tone === "amber") return "border-amber-500/35 bg-amber-500/10 text-amber-200";
+  if (tone === "red") return "border-red-500/35 bg-red-500/10 text-red-200";
+  return "border-slate-500/30 bg-slate-500/10 text-slate-200";
+}
 export default function GuestBookingsPage() {
   const { profile, loading: authLoading } = useAuth();
   const db = getFirestoreDb();
@@ -322,11 +360,28 @@ export default function GuestBookingsPage() {
   // ✅ Filters
   const [qText, setQText] = useState("");
   const [statusF, setStatusF] = useState<"all" | "active" | "completed" | "cancelled">("all");
-  const [fromDate, setFromDate] = useState(""); // YYYY-MM-DD (checkIn)
-  const [toDate, setToDate] = useState(""); // YYYY-MM-DD (checkOut)
+  const [fromDate, setFromDate] = useState(""); // checkIn min
+  const [toDate, setToDate] = useState(""); // checkOut max
   const [minPrice, setMinPrice] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
   const [sortKey, setSortKey] = useState<"created_desc" | "checkin_asc" | "checkout_asc" | "price_desc">("created_desc");
+
+  // ✅ Live “reklam” ticker (hafif)
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((t) => (t + 1) % 999999), 3400);
+    return () => window.clearInterval(id);
+  }, []);
+  const promoLine = useMemo(() => {
+    const lines = [
+      "Türkiye’nin en hızlı teklif platformu: Biddakika ✅",
+      "Fiyat düştüyse kaçırma — aynı gün rezervasyon yapanlar avantajlı ⚡",
+      "Voucher + mesaj + yorum: hepsi tek ekranda, kanıt niteliğinde 📄",
+      "Oteller “talebe özel” fiyat verir — parite baskısı yok 🧠",
+      "Tamamlanan konaklamalarda yorumlar gerçek puana dönüşür ⭐"
+    ];
+    return lines[tick % lines.length];
+  }, [tick]);
 
   useEffect(() => {
     async function load() {
@@ -340,7 +395,7 @@ export default function GuestBookingsPage() {
       setPageError(null);
 
       try {
-        // 1) booking'ler (misafir)
+        // 1) bookings (sadece misafir)
         const qBk = query(collection(db, "bookings"), where("guestId", "==", profile.uid));
         const snap = await getDocs(qBk);
 
@@ -351,101 +406,119 @@ export default function GuestBookingsPage() {
               id: d.id,
               offerId: v.offerId ?? null,
               requestId: v.requestId ?? null,
+
               hotelId: v.hotelId ?? null,
               hotelName: v.hotelName ?? null,
+
               guestId: v.guestId ?? null,
               guestName: v.guestName ?? v.guestDisplayName ?? null,
+
               city: v.city ?? null,
               district: v.district ?? null,
+
               checkIn: v.checkIn,
               checkOut: v.checkOut,
+
               adults: v.adults ?? null,
               childrenCount: v.childrenCount ?? null,
               childrenAges: v.childrenAges ?? null,
               roomsCount: v.roomsCount ?? null,
+
               totalPrice: Number(v.totalPrice ?? 0),
               currency: v.currency ?? "TRY",
               paymentMethod: v.paymentMethod ?? "payAtHotel",
               paymentStatus: v.paymentStatus ?? "—",
+
               status: v.status ?? "active",
               roomBreakdown: v.roomBreakdown ?? [],
               commissionRate: v.commissionRate ?? null,
+
               cancellationPolicyType: v.cancellationPolicyType ?? null,
               cancellationPolicyDays: v.cancellationPolicyDays ?? null,
               cancellationPolicyLabel: v.cancellationPolicyLabel ?? null,
+
               hasReview: v.hasReview ?? false,
               createdAt: v.createdAt
             } as Booking;
           })
           .filter((b) => b.status !== "deleted");
 
-        // 2) gerekli id’ler
-        const offerIds = new Set<string>();
-        const requestIds = new Set<string>();
-        const hotelIds = new Set<string>();
-        raw.forEach((b) => {
-          if (b.offerId) offerIds.add(b.offerId);
-          if (b.requestId) requestIds.add(b.requestId);
-          if (b.hotelId) hotelIds.add(b.hotelId);
-        });
+        // 2) collect ids
+        const offerIds = Array.from(new Set(raw.map((b) => b.offerId).filter(Boolean))) as string[];
+        const requestIds = Array.from(new Set(raw.map((b) => b.requestId).filter(Boolean))) as string[];
+        const hotelIds = Array.from(new Set(raw.map((b) => b.hotelId).filter(Boolean))) as string[];
 
-        // OFFERS (sadece gerekli olanları çekmek için yine collection + filter yapıyoruz)
-        const snapOffers = await getDocs(collection(db, "offers"));
+        // 3) OFFERS (rules/index güvenli: documentId in chunk)
         const offerMap: Record<string, OfferDoc> = {};
-        snapOffers.docs.forEach((d) => {
-          if (!offerIds.has(d.id)) return;
-          const v = d.data() as any;
-          offerMap[d.id] = {
-            id: d.id,
-            cancellationPolicyType: v.cancellationPolicyType as CancellationPolicyType | undefined,
-            cancellationPolicyDays: v.cancellationPolicyDays ?? null,
-            commissionRate: v.commissionRate ?? null,
-            roomBreakdown: v.roomBreakdown ?? []
-          };
-        });
+        for (const part of chunk(offerIds, 10)) {
+          if (!part.length) continue;
+          const qOff = query(collection(db, "offers"), where(documentId(), "in", part)
+);
+          const snapOff = await getDocs(qOff);
+          snapOff.docs.forEach((d) => {
+            const v = d.data() as any;
+            offerMap[d.id] = {
+              id: d.id,
+              cancellationPolicyType: v.cancellationPolicyType as CancellationPolicyType | undefined,
+              cancellationPolicyDays: v.cancellationPolicyDays ?? null,
+              commissionRate: v.commissionRate ?? null,
+              roomBreakdown: v.roomBreakdown ?? [],
+              priceHistory: Array.isArray(v.priceHistory) ? v.priceHistory : []
+            };
+          });
+        }
 
-        // REQUESTS
-        const snapReq = await getDocs(collection(db, "requests"));
+        // 4) REQUESTS (documentId in chunk)
         const reqMap: Record<string, RequestDoc> = {};
-        snapReq.docs.forEach((d) => {
-          if (!requestIds.has(d.id)) return;
-          const v = d.data() as any;
-          reqMap[d.id] = {
-            id: d.id,
-            city: v.city,
-            district: v.district ?? null,
-            checkIn: v.checkIn,
-            checkOut: v.checkOut,
-            adults: v.adults,
-            childrenCount: v.childrenCount ?? 0,
-            childrenAges: v.childrenAges ?? [],
-            roomsCount: v.roomsCount ?? 1,
-            roomTypes: v.roomTypes ?? []
-          };
-        });
+        for (const part of chunk(requestIds, 10)) {
+          if (!part.length) continue;
+          const qReq = query(collection(db, "requests"), where(documentId(), "in", part)
+);
+          const snapReq = await getDocs(qReq);
+          snapReq.docs.forEach((d) => {
+            const v = d.data() as any;
+            reqMap[d.id] = {
+              id: d.id,
+              city: v.city,
+              district: v.district ?? null,
+              checkIn: v.checkIn,
+              checkOut: v.checkOut,
+              adults: v.adults,
+              childrenCount: v.childrenCount ?? 0,
+              childrenAges: v.childrenAges ?? [],
+              roomsCount: v.roomsCount ?? 1,
+              roomTypes: v.roomTypes ?? []
+            };
+          });
+        }
 
-        // HOTELS (users içinden hotel profile)
-        const snapHotels = await getDocs(collection(db, "users"));
+        // 5) HOTELS (users/{hotelId} documentId in chunk)
         const hMap: Record<string, HotelDoc> = {};
-        snapHotels.docs.forEach((d) => {
-          if (!hotelIds.has(d.id)) return;
-          const v = d.data() as any;
-          const hp = v.hotelProfile || {};
-          const roomTypes: HotelRoomType[] =
-            hp.roomTypes || hp.rooms || hp.roomCatalog || hp.roomTypeCatalog || [];
+        for (const part of chunk(hotelIds, 10)) {
+          if (!part.length) continue;
+          const qH = query(collection(db, "users"), where(documentId(), "in", part)
+);
+          const snapH = await getDocs(qH);
+          snapH.docs.forEach((d) => {
+            const v = d.data() as any;
+            const hp = v.hotelProfile || {};
+            const roomTypes: HotelRoomType[] = hp.roomTypes || hp.rooms || hp.roomCatalog || hp.roomTypeCatalog || [];
+            const imageUrls: string[] = hp.imageUrls || hp.images || hp.gallery || [];
 
-          hMap[d.id] = {
-            id: d.id,
-            city: hp.city || v.city,
-            district: hp.district ?? v.district ?? null,
-            locationUrl: hp.locationUrl || v.locationUrl || null,
-            address: hp.address || v.address || null,
-            roomTypes: Array.isArray(roomTypes) ? roomTypes : []
-          };
-        });
+            hMap[d.id] = {
+              id: d.id,
+              city: hp.city || v.city,
+              district: hp.district ?? v.district ?? null,
+              locationUrl: hp.locationUrl || v.locationUrl || null,
+              address: hp.address || v.address || null,
+              imageUrls: Array.isArray(imageUrls) ? imageUrls : [],
+              roomTypes: Array.isArray(roomTypes) ? roomTypes : []
+            };
+          });
+        }
         setHotelMap(hMap);
 
-        // 3) enrich
+        // 6) enrich bookings
         const enriched: Booking[] = raw.map((b) => {
           const off = b.offerId ? offerMap[b.offerId] : undefined;
           const req = b.requestId ? reqMap[b.requestId] : undefined;
@@ -453,7 +526,6 @@ export default function GuestBookingsPage() {
 
           const checkIn = b.checkIn ?? req?.checkIn ?? "";
           const checkOut = b.checkOut ?? req?.checkOut ?? "";
-
           const nights = calcNights(checkIn, checkOut);
 
           const roomBreakdown =
@@ -470,29 +542,36 @@ export default function GuestBookingsPage() {
             district: (req?.district as string | null) ?? b.district,
             requestCity: req?.city,
             requestDistrict: (req?.district as string | null) ?? null,
+
             hotelCity: hotel?.city,
             hotelDistrict: hotel?.district ?? null,
             hotelLocationUrl: hotel?.locationUrl ?? null,
             hotelAddress: hotel?.address ?? null,
+            hotelImageUrls: hotel?.imageUrls ?? null,
+
             checkIn,
             checkOut,
             nights,
             roomBreakdown,
+
             cancellationPolicyType,
             cancellationPolicyDays,
             commissionRate: b.commissionRate ?? off?.commissionRate ?? null,
+
             adults: b.adults ?? req?.adults ?? b.adults ?? null,
             childrenCount: b.childrenCount ?? req?.childrenCount ?? null,
             childrenAges: b.childrenAges ?? req?.childrenAges ?? null,
-            roomsCount: b.roomsCount ?? req?.roomsCount ?? null
+            roomsCount: b.roomsCount ?? req?.roomsCount ?? null,
+
+            offerPriceHistory: off?.priceHistory ?? null
           };
         });
 
         enriched.sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0));
         setBookings(enriched);
-      } catch (err) {
+      } catch (err: any) {
         console.error("Misafir rezervasyonları yüklenirken hata:", err);
-        setPageError("Rezervasyonlar yüklenirken bir hata oluştu.");
+        setPageError(err?.message || "Rezervasyonlar yüklenirken bir hata oluştu.");
       } finally {
         setLoading(false);
       }
@@ -550,10 +629,7 @@ export default function GuestBookingsPage() {
     }
 
     if (statusF !== "all") {
-      list = list.filter((b) => {
-        const st = derivedStatus(b);
-        return st === statusF;
-      });
+      list = list.filter((b) => derivedStatus(b) === statusF);
     }
 
     const f = parseDate(fromDate);
@@ -590,6 +666,7 @@ export default function GuestBookingsPage() {
     return list;
   }, [bookings, qText, statusF, fromDate, toDate, minPrice, maxPrice, sortKey]);
 
+  // --- UI handlers
   function openVoucher(b: Booking) {
     setVoucherBooking(b);
     setVoucherOpen(true);
@@ -655,7 +732,7 @@ export default function GuestBookingsPage() {
       setTimeout(() => setMessageSuccess(null), 900);
     } catch (err) {
       console.error("Misafir mesaj gönderirken hata:", err);
-      setMessageError("Mesaj gönderilirken bir hata oluştu. İzinleri kontrol et.");
+      setMessageError("Mesaj gönderilirken bir hata oluştu. (Rules / bağlantı kontrol et)");
     } finally {
       setMessageSending(false);
     }
@@ -739,13 +816,48 @@ export default function GuestBookingsPage() {
       setCancelSavingId(null);
     }
   }
+  async function handleDeleteCompletedBooking(b: Booking) {
+  // sadece tamamlanan + misafirin kendi booking'i ise gösterilecek zaten
+  const ok1 = window.confirm("Bu tamamlanan rezervasyonu silmek istiyor musun?");
+  if (!ok1) return;
 
-  async function handleHideCancelled(b: Booking) {
+  const ok2 = window.confirm("Emin misin? Bu işlem geri alınamaz ve rezervasyon listenden kaldırılacak.");
+  if (!ok2) return;
+
+  try {
+    setCancelSavingId(b.id); // aynı spinner state'i kullanalım
+    setPageError(null);
+    setPageMessage(null);
+
+    await updateDoc(doc(db, "bookings", b.id), {
+      status: "deleted",
+      deletedAt: serverTimestamp()
+    });
+
+    // listeden kaldır
+    setBookings((prev) => prev.filter((x) => x.id !== b.id));
+    setPageMessage("Tamamlanan rezervasyon listenden kaldırıldı.");
+  } catch (err) {
+    console.error("Tamamlanan rezervasyon silinirken hata:", err);
+    setPageError("Rezervasyon silinirken hata oluştu.");
+  } finally {
+    setCancelSavingId(null);
+  }
+}
+
+
+  /** ✅ İptal/ tamamlanan rezervasyonu “listeden kaldır” (silme) */
+  async function handleArchiveBooking(b: Booking) {
+    const ok = window.confirm("Bu rezervasyonu listeden kaldırmak (arşivlemek) istiyor musun?");
+    if (!ok) return;
+
     try {
       await updateDoc(doc(db, "bookings", b.id), { status: "deleted", deletedAt: serverTimestamp() });
       setBookings((prev) => prev.filter((bk) => bk.id !== b.id));
+      setPageMessage("Rezervasyon listeden kaldırıldı.");
+      setTimeout(() => setPageMessage(null), 1200);
     } catch (err) {
-      console.error("Rezervasyonu gizlerken hata:", err);
+      console.error("Rezervasyonu arşivlerken hata:", err);
       setPageError("Rezervasyonu listeden kaldırırken bir hata oluştu.");
     }
   }
@@ -753,13 +865,22 @@ export default function GuestBookingsPage() {
   return (
     <Protected allowedRoles={["guest"]}>
       <div className="container-page space-y-6">
+        {/* Premium promo strip */}
+        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+          <div className="flex items-center gap-2 text-sm text-slate-200">
+            <span className="inline-flex h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="font-semibold text-white">Biddakika</span>
+            <span className="text-slate-300">{promoLine}</span>
+          </div>
+        </div>
+
         {/* Header + Summary */}
         <section className="space-y-3">
           <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
             <div className="space-y-1">
               <h1 className="text-2xl font-semibold text-slate-100">Rezervasyonlarım</h1>
               <p className="text-sm text-slate-300 max-w-3xl">
-                Rezervasyonlarını filtreleyebilir, voucher alabilir, otelle mesajlaşabilir ve oda tiplerine tıklayıp oda detaylarını görebilirsin.
+                Burada tüm rezervasyonların var. <b>Voucher</b> (kanıt), <b>mesajlaşma</b>, <b>yorum</b>, oda görselleri ve fiyat kırılımı tek yerde.
               </p>
             </div>
 
@@ -769,6 +890,11 @@ export default function GuestBookingsPage() {
               <StatCard title="Toplam harcama" value={`${summary.totalSpend.toLocaleString("tr-TR")} ₺`} strong />
               <StatCard title="En sık şehir" value={summary.topCity} />
             </div>
+          </div>
+
+          {/* Ads small */}
+          <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+            ✅ “İyi ki var Biddakika” — voucher + mesaj + yorum = tam kayıt. Otelde elinde kanıt olur.
           </div>
 
           {/* Filters */}
@@ -893,14 +1019,13 @@ export default function GuestBookingsPage() {
         {!loading && filteredBookings.length === 0 && (
           <p className="text-sm text-slate-400">Filtrelere uygun rezervasyon bulunamadı.</p>
         )}
-
         {filteredBookings.length > 0 && (
           <section className="rounded-2xl border border-slate-800 bg-slate-950/80 shadow shadow-slate-950/40 text-xs overflow-hidden">
             <div className="hidden md:grid grid-cols-[2fr_1.6fr_1.4fr_1.2fr_auto] bg-slate-900 text-[0.75rem] font-semibold text-slate-100 px-4 py-2">
               <div>Tesis / konum</div>
               <div>Tarih / kişi</div>
               <div>Ödeme & iptal</div>
-              <div>Durum</div>
+              <div>Kalan süre</div>
               <div className="text-right">İşlemler</div>
             </div>
 
@@ -908,53 +1033,69 @@ export default function GuestBookingsPage() {
               const createdStr = b.createdAt ? b.createdAt.toDate().toLocaleString("tr-TR") : "—";
               const nights = b.nights ?? calcNights(b.checkIn, b.checkOut);
               const st = derivedStatus(b);
+
               const canCancel = canCancelBooking(b);
               const canMsg = canMessageBooking(b);
               const canReview = canReviewBooking(b);
 
-              const checkInDate = parseDate(b.checkIn);
-              const daysToCheckIn = checkInDate ? diffInDays(checkInDate, new Date()) : null;
-              const checkInText =
-                daysToCheckIn == null
-                  ? null
-                  : daysToCheckIn > 0
-                  ? `Girişe ${daysToCheckIn} gün kaldı`
-                  : daysToCheckIn === 0
-                  ? "Giriş günün bugün"
-                  : "Giriş tarihi geçti";
+              const cd = checkInCountdown(b.checkIn);
+              const mapsUrl = buildMapsUrl(b, b.hotelId ? hotelMap[b.hotelId] : null);
+
+              // “kanıt”: price history varsa fiyat düştü mü?
+              const ph = Array.isArray(b.offerPriceHistory) ? b.offerPriceHistory : [];
+              const hotelPrices = ph.filter((x) => x?.actor === "hotel").map((x) => Number(x.price || 0)).filter((x) => x > 0);
+              const minHotel = hotelPrices.length ? Math.min(...hotelPrices) : null;
+              const maxHotel = hotelPrices.length ? Math.max(...hotelPrices) : null;
+              const hasDrop = minHotel != null && maxHotel != null && minHotel < maxHotel;
 
               return (
                 <div key={b.id} className="border-t border-slate-800">
                   <div className="grid md:grid-cols-[2fr_1.6fr_1.4fr_1.2fr_auto] gap-2 px-4 py-3 items-start">
                     {/* Tesis */}
                     <div className="space-y-1">
-                      <div className="text-slate-100 text-sm font-semibold">
+                      <div className="text-slate-100 text-sm font-semibold flex items-center gap-2 flex-wrap">
                         {b.hotelName || "Tesis"}
-                        <span className={`ml-2 inline-flex items-center rounded-md border px-2 py-0.5 text-[0.7rem] ${statusClass(b)}`}>
+                        <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[0.7rem] ${statusClass(b)}`}>
                           {statusText(b)}
                         </span>
+
+                        {hasDrop && (
+                          <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[0.7rem] ${pillTone("emerald")}`}>
+                            🔥 Fiyat düştü
+                          </span>
+                        )}
                       </div>
 
                       <div className="text-[0.75rem] text-slate-300">
-                        Tesis konumu: {safeStr(b.hotelCity || b.city)}{b.hotelDistrict ? ` / ${b.hotelDistrict}` : ""}
+                        {safeStr(b.hotelCity || b.city)}
+                        {b.hotelDistrict ? ` / ${b.hotelDistrict}` : ""}
                       </div>
 
-                      {(b.requestCity || b.requestDistrict) && (
-                        <div className="text-[0.7rem] text-slate-500">
-                          Talep edilen konum: {safeStr(b.requestCity)}{b.requestDistrict ? ` / ${b.requestDistrict}` : ""}
+                      {b.hotelAddress && (
+                        <div className="text-[0.72rem] text-slate-500">
+                          Adres: {b.hotelAddress}
                         </div>
                       )}
 
+                      {mapsUrl && (
+                        <a className="text-[0.72rem] text-sky-300 hover:underline" href={mapsUrl} target="_blank" rel="noreferrer">
+                          Konumu aç (Maps)
+                        </a>
+                      )}
+
                       <div className="text-[0.7rem] text-slate-500">
-                        Rezervasyon No: <span className="text-slate-200">{b.id}</span>
+                        Rezervasyon No: <span className="text-slate-200">{b.id}</span> • Oluşturma: {createdStr}
                       </div>
 
-                      <div className="text-[0.7rem] text-slate-500">Oluşturma: {createdStr}</div>
+                      {/* küçük reklam */}
+                      <div className="text-[0.72rem] text-emerald-200/80">
+                        ✅ Biddakika: Voucher + mesaj + yorum = tek dosya.
+                      </div>
                     </div>
 
                     {/* Tarih */}
                     <div className="space-y-1 text-slate-100">
-                      <p className="text-[0.85rem] font-semibold">
+                      <p className="text-[0.9rem] font-semibold">
                         {b.checkIn} – {b.checkOut} <span className="text-slate-400 text-[0.75rem]">• {nights} gece</span>
                       </p>
                       <p className="text-[0.75rem] text-slate-300">
@@ -967,7 +1108,7 @@ export default function GuestBookingsPage() {
 
                     {/* Ödeme */}
                     <div className="space-y-1 text-slate-100">
-                      <p className="text-[0.9rem] font-extrabold">
+                      <p className="text-[0.95rem] font-extrabold text-emerald-300">
                         {Number(b.totalPrice || 0).toLocaleString("tr-TR")} {b.currency}
                       </p>
                       <p className="text-[0.75rem] text-slate-400">
@@ -981,24 +1122,24 @@ export default function GuestBookingsPage() {
                           İptal: {cancellationPolicyTextFromBooking(b)}
                         </p>
                       )}
-                      {st === "cancelled" && (
-                        <p className="text-[0.72rem] text-red-300">İptal edildi.</p>
-                      )}
                     </div>
 
-                    {/* Durum */}
+                    {/* Kalan süre */}
                     <div className="space-y-1">
-                      {checkInText && <p className="text-[0.75rem] text-slate-300">{checkInText}</p>}
-                      {b.hotelAddress && (
-                        <p className="text-[0.72rem] text-slate-500">
-                          Adres: {b.hotelAddress}
-                        </p>
+                      <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[0.75rem] ${pillTone(cd.tone as any)}`}>
+                        ⏱️ {cd.label}
+                      </span>
+                      {st === "completed" && (
+                        <div className="text-[0.72rem] text-slate-400">Konaklama bitti — yorum bırakmayı unutma ⭐</div>
+                      )}
+                      {st === "cancelled" && (
+                        <div className="text-[0.72rem] text-red-300">İptal edildi</div>
                       )}
                     </div>
 
                     {/* Actions */}
                     <div className="flex md:flex-col flex-col gap-2 items-end">
-                      {canMsg && (
+                      {canMsg ? (
                         <button
                           type="button"
                           onClick={() => openMessageModal(b)}
@@ -1006,6 +1147,8 @@ export default function GuestBookingsPage() {
                         >
                           Mesajlar
                         </button>
+                      ) : (
+                        <span className="text-[0.7rem] text-slate-500">Mesajlaşma kapalı</span>
                       )}
 
                       <button
@@ -1023,17 +1166,19 @@ export default function GuestBookingsPage() {
                           disabled={cancelSavingId === b.id}
                           className="w-full md:w-auto rounded-md bg-amber-500 text-slate-950 px-3 py-2 text-[0.75rem] font-semibold hover:bg-amber-400 disabled:opacity-60"
                         >
-                          {cancelSavingId === b.id ? "İptal ediliyor..." : "Rezervasyonu iptal et"}
+                          {cancelSavingId === b.id ? "İptal ediliyor..." : "İptal et"}
                         </button>
                       )}
+
+                     
 
                       {b.status === "cancelled" && (
                         <button
                           type="button"
-                          onClick={() => handleHideCancelled(b)}
-                          className="w-full md:w-auto rounded-md border border-slate-700 px-3 py-2 text-[0.75rem] text-slate-300 hover:border-red-500 hover:text-red-300"
+                          onClick={() => handleArchiveBooking(b)}
+                          className="w-full md:w-auto rounded-md border border-slate-700 px-3 py-2 text-[0.75rem] text-slate-200 hover:border-red-500 hover:text-red-300"
                         >
-                          Listeden kaldır
+                          İptali sil
                         </button>
                       )}
 
@@ -1046,6 +1191,18 @@ export default function GuestBookingsPage() {
                           Yorum yap
                         </button>
                       )}
+                      {/* ✅ Tamamlanan rezervasyonu sil (2 kez onay) */}
+{derivedStatus(b) === "completed" && (
+  <button
+    type="button"
+    onClick={() => handleDeleteCompletedBooking(b)}
+    disabled={cancelSavingId === b.id}
+    className="w-full md:w-auto rounded-md border border-red-500/50 px-3 py-2 text-[0.75rem] text-red-200 hover:bg-red-500/10 disabled:opacity-60"
+  >
+    {cancelSavingId === b.id ? "Siliniyor..." : "Sil"}
+  </button>
+)}
+
                     </div>
                   </div>
                 </div>
@@ -1118,7 +1275,7 @@ function StatCard({ title, value, strong }: { title: string; value: string; stro
     </div>
   );
 }
-/* -------------------- VOUCHER / DETAY (ADVANCED) -------------------- */
+/* -------------------- VOUCHER / DETAY (ADVANCED + SUNUM) -------------------- */
 
 function BookingVoucherModalAdvanced({
   booking,
@@ -1136,11 +1293,32 @@ function BookingVoucherModalAdvanced({
   const nights = booking.nights ?? calcNights(booking.checkIn, booking.checkOut);
   const roomBreakdown = Array.isArray(booking.roomBreakdown) ? booking.roomBreakdown : [];
   const cancelText = cancellationPolicyTextFromBooking(booking);
-  const mapsUrl = buildMapsUrl(booking, hotel);
+  const mapsUrl = buildMapsUrl(booking, hotel || null);
 
-  // voucher text
+  // hotel images
+  const hotelImages = (booking.hotelImageUrls || hotel?.imageUrls || []).filter(Boolean);
+  const [activeImg, setActiveImg] = useState(0);
+
+  // price history (kanıt)
+  const ph = Array.isArray(booking.offerPriceHistory) ? booking.offerPriceHistory : [];
+  const phSorted = useMemo(() => {
+    const arr = [...ph];
+    arr.sort((a, b) => (a?.createdAt?.toMillis?.() ?? 0) - (b?.createdAt?.toMillis?.() ?? 0));
+    return arr;
+  }, [ph]);
+
+  function actorTR(a: string) {
+    return a === "hotel" ? "Otel" : "Misafir";
+  }
+  function kindTR(k: string) {
+    if (k === "initial") return "İlk fiyat";
+    if (k === "update") return "Fiyat güncellendi";
+    return "Karşı teklif";
+  }
+
+  // voucher text (print)
   const voucherLines: string[] = [];
-  voucherLines.push("Biddakika — Rezervasyon Voucherı (Misafir)");
+  voucherLines.push("Biddakika — Rezervasyon Voucherı");
   voucherLines.push(`Rezervasyon No: ${booking.id}`);
   voucherLines.push(`Tesis: ${safeStr(booking.hotelName)}`);
   voucherLines.push(`Konum: ${safeStr(booking.hotelCity || booking.city)}${booking.hotelDistrict ? " / " + booking.hotelDistrict : ""}`);
@@ -1155,11 +1333,19 @@ function BookingVoucherModalAdvanced({
   if (roomBreakdown.length) {
     voucherLines.push("");
     voucherLines.push("Oda/Fiyat Kırılımı:");
-    roomBreakdown.forEach((rb, i) => {
+    roomBreakdown.forEach((rb) => {
       const n = rb.nights ?? nights;
       const nightly = Number(rb.nightlyPrice ?? 0);
       const total = Number(rb.totalPrice ?? nightly * n);
       voucherLines.push(`• ${rb.roomTypeName || "Oda"} — ${n} gece x ${nightly} = ${total} ${safeStr(booking.currency, "TRY")}`);
+    });
+  }
+
+  if (phSorted.length) {
+    voucherLines.push("");
+    voucherLines.push("Fiyat Geçmişi (kanıt):");
+    phSorted.forEach((x) => {
+      voucherLines.push(`• ${actorTR(x.actor)} / ${kindTR(x.kind)}: ${Number(x.price).toLocaleString("tr-TR")} ${safeStr(booking.currency, "TRY")}`);
     });
   }
 
@@ -1179,9 +1365,10 @@ function BookingVoucherModalAdvanced({
   h1{font-size:18px;margin:0 0 12px}
   pre{white-space:pre-wrap;font-size:12px;line-height:1.45}
   .box{border:1px solid #ddd;padding:12px;border-radius:10px}
+  .brand{color:#059669;font-weight:700}
 </style>
 </head><body>
-<h1>Biddakika — Rezervasyon Voucherı</h1>
+<h1><span class="brand">Biddakika</span> — Rezervasyon Voucherı</h1>
 <div class="box"><pre>${voucherText.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</pre></div>
 <script>window.print();</script>
 </body></html>`;
@@ -1201,28 +1388,18 @@ function BookingVoucherModalAdvanced({
     }
   }
 
-  async function handleShare() {
-    try {
-      if ((navigator as any)?.share) {
-        await (navigator as any).share({ title: "Biddakika voucher", text: voucherText });
-      } else {
-        await handleCopy();
-      }
-    } catch {
-      // cancel
-    }
-  }
-
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/70">
       <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
-
-      <div className="relative mt-10 w-full max-w-4xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-2xl max-h-[85vh] overflow-y-auto space-y-4">
+      <div className="relative mt-10 w-full max-w-5xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-2xl max-h-[88vh] overflow-y-auto space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
-            <h2 className="text-base font-semibold text-slate-100">Rezervasyon voucher / detay</h2>
+            <h2 className="text-base font-semibold text-slate-100">Biddakika Voucher / Kanıt</h2>
             <p className="text-[0.75rem] text-slate-400">
               Rezervasyon No: <span className="text-slate-200 font-semibold">{booking.id}</span>
+            </p>
+            <p className="text-[0.75rem] text-emerald-200/80">
+              ✅ Türkiye’nin en iyi otel satış platformu — iyi ki var Biddakika.
             </p>
           </div>
 
@@ -1233,49 +1410,84 @@ function BookingVoucherModalAdvanced({
             <button onClick={handleCopy} className="rounded-md border border-slate-600 px-3 py-2 text-[0.75rem] text-slate-100 hover:bg-slate-800">
               Metni kopyala
             </button>
-            <button onClick={handleShare} className="rounded-md border border-slate-600 px-3 py-2 text-[0.75rem] text-slate-100 hover:bg-slate-800">
-              Paylaş
-            </button>
             <button onClick={onClose} className="rounded-full border border-slate-700 bg-slate-900 px-3 py-2 text-[0.75rem] text-slate-300 hover:border-emerald-400">
               Kapat ✕
             </button>
           </div>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-3">
-          <InfoCard title="Tesis" lines={[
-            safeStr(booking.hotelName, "Tesis"),
-            `${safeStr(booking.hotelCity || booking.city)}${booking.hotelDistrict ? ` / ${booking.hotelDistrict}` : ""}`,
-            booking.hotelAddress ? `Adres: ${booking.hotelAddress}` : ""
-          ].filter(Boolean)} extra={
-            mapsUrl ? (
-              <a href={mapsUrl} target="_blank" rel="noreferrer" className="text-[0.72rem] text-sky-300 hover:underline">
-                Haritada konumu gör
-              </a>
-            ) : null
-          } />
+        {/* hotel presentation */}
+        <div className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
+          <div className="rounded-2xl border border-slate-800 bg-slate-950/70 overflow-hidden">
+            {hotelImages.length ? (
+              <>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={hotelImages[activeImg]} className="w-full h-56 object-cover" alt="hotel" />
+                {hotelImages.length > 1 && (
+                  <div className="flex gap-2 p-3 overflow-x-auto border-t border-slate-800 bg-slate-950/60">
+                    {hotelImages.slice(0, 10).map((src, idx) => (
+                      <button
+                        key={idx}
+                        className={`w-16 h-12 rounded-lg overflow-hidden border ${idx === activeImg ? "border-emerald-400" : "border-slate-700"}`}
+                        onClick={() => setActiveImg(idx)}
+                        type="button"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={src} className="w-full h-full object-cover" alt={`thumb-${idx}`} />
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="h-56 flex items-center justify-center text-slate-500">Otel görseli yok</div>
+            )}
+          </div>
 
-          <InfoCard title="Konaklama" lines={[
-            `${booking.checkIn} – ${booking.checkOut}`,
-            `${nights} gece • ${(booking.adults ?? 0) + (booking.childrenCount ?? 0)} kişi • ${booking.roomsCount || 1} oda`
-          ]} />
+          <div className="grid gap-3">
+            <InfoCard
+              title="Tesis & konum"
+              lines={[
+                safeStr(booking.hotelName, "Tesis"),
+                `${safeStr(booking.hotelCity || booking.city)}${booking.hotelDistrict ? ` / ${booking.hotelDistrict}` : ""}`,
+                booking.hotelAddress ? `Adres: ${booking.hotelAddress}` : ""
+              ].filter(Boolean)}
+              extra={
+                mapsUrl ? (
+                  <a href={mapsUrl} target="_blank" rel="noreferrer" className="text-[0.72rem] text-sky-300 hover:underline">
+                    Haritada konumu gör
+                  </a>
+                ) : null
+              }
+            />
 
-          <InfoCard title="Ödeme" lines={[
-            `${Number(booking.totalPrice || 0).toLocaleString("tr-TR")} ${safeStr(booking.currency, "TRY")}`,
-            paymentMethodText(String(booking.paymentMethod)),
-            `Durum: ${safeStr(booking.paymentStatus)}`
-          ]} />
+            <InfoCard
+              title="Konaklama"
+              lines={[
+                `${booking.checkIn} – ${booking.checkOut} (${booking.nights ?? calcNights(booking.checkIn, booking.checkOut)} gece)`,
+                `${(booking.adults ?? 0) + (booking.childrenCount ?? 0)} kişi • ${booking.roomsCount || 1} oda`
+              ]}
+            />
+
+            <InfoCard
+              title="Ödeme"
+              lines={[
+                `${Number(booking.totalPrice || 0).toLocaleString("tr-TR")} ${safeStr(booking.currency, "TRY")}`,
+                `Yöntem: ${paymentMethodText(String(booking.paymentMethod))}`,
+                `Durum: ${safeStr(booking.paymentStatus)}`
+              ]}
+            />
+          </div>
         </div>
 
+        {/* room breakdown */}
         <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 space-y-2">
-          <p className="text-[0.75rem] text-slate-400">Oda / fiyat kırılımı</p>
+          <p className="text-[0.75rem] text-slate-400">Oda / fiyat kırılımı (kanıt)</p>
 
           {roomBreakdown.length === 0 ? (
-            <p className="text-[0.85rem] text-slate-300">
-              Oda kırılımı kaydı yok. Toplam tutar tek kalem.
-            </p>
+            <p className="text-[0.85rem] text-slate-300">Oda kırılımı kaydı yok. Toplam tutar tek kalem.</p>
           ) : (
-            <div className="space-y-2">
+            <div className="grid gap-2 md:grid-cols-2">
               {roomBreakdown.map((rb, idx) => {
                 const n = rb.nights ?? nights;
                 const nightly = Number(rb.nightlyPrice ?? 0);
@@ -1286,23 +1498,19 @@ function BookingVoucherModalAdvanced({
                     key={idx}
                     type="button"
                     onClick={() => onOpenRoom(String(rb.roomTypeName || ""))}
-                    className="w-full text-left rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3 hover:bg-white/[0.03] transition"
+                    className="rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3 hover:bg-white/[0.03] text-left"
                     title="Oda detayını gör"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="text-slate-100 font-semibold">
-                          {rb.roomTypeName || `Oda ${idx + 1}`}
-                          <span className="ml-2 text-[0.75rem] text-slate-400">({n} gece)</span>
-                        </p>
-                        <p className="text-[0.78rem] text-slate-400">
-                          {nightly.toLocaleString("tr-TR")} {safeStr(booking.currency, "TRY")} / gece
+                        <p className="text-slate-100 font-semibold">{rb.roomTypeName || `Oda ${idx + 1}`}</p>
+                        <p className="text-[0.75rem] text-slate-400">
+                          {n} gece • {nightly.toLocaleString("tr-TR")} {safeStr(booking.currency, "TRY")} / gece
                         </p>
                       </div>
-
                       <div className="text-right">
-                        <p className="text-[0.7rem] text-slate-400">Oda toplamı</p>
-                        <p className="text-emerald-300 font-semibold">
+                        <p className="text-[0.7rem] text-slate-400">Toplam</p>
+                        <p className="text-emerald-300 font-extrabold">
                           {total.toLocaleString("tr-TR")} {safeStr(booking.currency, "TRY")}
                         </p>
                         <p className="text-[0.7rem] text-slate-500">Detay ▶</p>
@@ -1315,6 +1523,31 @@ function BookingVoucherModalAdvanced({
           )}
         </div>
 
+        {/* price history */}
+        {phSorted.length > 0 && (
+          <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 space-y-2">
+            <p className="text-[0.75rem] text-slate-400">Fiyat geçmişi (pazarlık / güncelleme kanıtı)</p>
+            <div className="grid gap-2 md:grid-cols-2">
+              {phSorted.map((x, idx) => (
+                <div key={idx} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-slate-100 font-semibold">
+                      {actorTR(x.actor)} • <span className="text-slate-300">{kindTR(x.kind)}</span>
+                    </div>
+                    <div className="text-emerald-300 font-extrabold">
+                      {Number(x.price || 0).toLocaleString("tr-TR")} {safeStr(booking.currency, "TRY")}
+                    </div>
+                  </div>
+                  {x.createdAt?.toDate && (
+                    <div className="text-[0.7rem] text-slate-500 mt-1">{x.createdAt.toDate().toLocaleString("tr-TR")}</div>
+                  )}
+                  {x.note ? <div className="text-[0.75rem] text-slate-300 mt-1">Not: {x.note}</div> : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {cancelText && (
           <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
             <p className="text-[0.75rem] text-slate-400">İptal koşulları</p>
@@ -1323,25 +1556,28 @@ function BookingVoucherModalAdvanced({
         )}
 
         <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-          <p className="text-[0.75rem] text-slate-400">Misafir bilgileri</p>
+          <p className="text-[0.75rem] text-slate-400">Misafir</p>
           <div className="grid gap-2 md:grid-cols-2 mt-2">
-            <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-              <p className="text-[0.72rem] text-slate-400">Ad soyad</p>
-              <p className="text-slate-100 font-semibold">{safeStr(guestProfile?.displayName || booking.guestName)}</p>
-            </div>
-            <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-              <p className="text-[0.72rem] text-slate-400">E-posta</p>
-              <p className="text-slate-100">{safeStr(guestProfile?.email)}</p>
-            </div>
+            <MiniField label="Ad soyad" value={safeStr(guestProfile?.displayName || booking.guestName)} />
+            <MiniField label="E-posta" value={safeStr(guestProfile?.email)} />
           </div>
         </div>
 
         <p className="text-[0.7rem] text-slate-500">
-          Bu voucher, otelde hızlı kontrol için tüm bilgileri içerir. Oda adına tıklayıp oda detaylarına bakabilirsin.
+          Bu voucher, otelde hızlı kontrol için tüm bilgileri içerir. İstersen yazdırıp PDF al.
         </p>
       </div>
     </div>
   );
+}
+
+function actorTR(a: string) {
+  return a === "hotel" ? "Otel" : "Misafir";
+}
+function kindTR(k: string) {
+  if (k === "initial") return "İlk fiyat";
+  if (k === "update") return "Fiyat güncellendi";
+  return "Karşı teklif";
 }
 
 function InfoCard({ title, lines, extra }: { title: string; lines: string[]; extra?: any }) {
@@ -1356,6 +1592,14 @@ function InfoCard({ title, lines, extra }: { title: string; lines: string[]; ext
         ))}
         {extra}
       </div>
+    </div>
+  );
+}
+function MiniField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+      <p className="text-[0.72rem] text-slate-400">{label}</p>
+      <p className="text-slate-100 font-semibold mt-1 whitespace-pre-wrap">{value}</p>
     </div>
   );
 }
@@ -1375,10 +1619,7 @@ function RoomTypeModal({
 }) {
   const room = findRoomTypeByName(hotel, roomName);
 
-  const title = safeStr(
-    room?.name ?? room?.title ?? room?.roomTypeName ?? roomName,
-    "Oda"
-  );
+  const title = safeStr(room?.name ?? room?.title ?? room?.roomTypeName ?? roomName, "Oda");
 
   const images: string[] =
     (room?.images as string[]) ||
@@ -1422,14 +1663,11 @@ function RoomTypeModal({
             ))}
           </div>
         ) : (
-          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-slate-400 text-sm">
-            Bu oda için görsel bulunamadı.
-          </div>
+          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-slate-400 text-sm">Bu oda için görsel bulunamadı.</div>
         )}
 
         <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 space-y-2">
           <p className="text-[0.75rem] text-slate-400">Oda bilgileri</p>
-
           <div className="grid gap-2 md:grid-cols-3">
             <MiniField label="Kapasite" value={String(capacity)} />
             <MiniField label="Boyut" value={String(size)} />
@@ -1442,23 +1680,13 @@ function RoomTypeModal({
           </div>
         </div>
 
-        <p className="text-[0.7rem] text-slate-500">
-          Oda detayları, otelin profilinde tanımladığı bilgilere göre gösterilir.
-        </p>
+        <p className="text-[0.7rem] text-slate-500">Oda detayları, otelin profilinde tanımladığı bilgilere göre gösterilir.</p>
       </div>
     </div>
   );
 }
 
-function MiniField({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-      <p className="text-[0.72rem] text-slate-400">{label}</p>
-      <p className="text-slate-100 font-semibold mt-1">{value}</p>
-    </div>
-  );
-}
-/* -------------------- MESAJ MODALI (GUEST) -------------------- */
+/* -------------------- MESAJ MODALI (GUEST) — index’siz güvenli -------------------- */
 
 function BookingMessageModalGuest({
   booking,
@@ -1486,11 +1714,8 @@ function BookingMessageModalGuest({
   const [loadingMessages, setLoadingMessages] = useState(true);
 
   useEffect(() => {
-    const q = query(
-      collection(db, "bookingMessages"),
-      where("bookingId", "==", booking.id),
-      orderBy("createdAt", "asc")
-    );
+    // ✅ orderBy kaldırdım (index istemesin diye) — snapshot içinden sort yapıyoruz
+    const q = query(collection(db, "bookingMessages"), where("bookingId", "==", booking.id));
 
     const unsub = onSnapshot(
       q,
@@ -1508,6 +1733,9 @@ function BookingMessageModalGuest({
             read: v.read
           };
         });
+
+        // client-side sort
+        msgs.sort((a, b) => (a.createdAt?.toMillis?.() ?? 0) - (b.createdAt?.toMillis?.() ?? 0));
 
         setMessages(msgs);
         setLoadingMessages(false);
@@ -1545,9 +1773,7 @@ function BookingMessageModalGuest({
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
             <h2 className="text-base font-semibold text-slate-100">Otelle mesajlaş</h2>
-            <p className="text-[0.78rem] text-slate-400">
-              {safeStr(booking.hotelName)} • {booking.checkIn} – {booking.checkOut}
-            </p>
+            <p className="text-[0.78rem] text-slate-400">{safeStr(booking.hotelName)} • {booking.checkIn} – {booking.checkOut}</p>
           </div>
           <button onClick={onClose} className="text-[0.85rem] text-slate-400 hover:text-slate-200">
             ✕ Kapat

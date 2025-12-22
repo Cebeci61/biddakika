@@ -15,18 +15,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="tr">
       <body className="min-h-screen bg-slate-950 text-slate-50">
         <AuthProvider>
-          {/* sticky ve arkaplan eklendi */}
-          <header className="sticky top-0 z-40 border-b border-slate-800 bg-slate-950/95 backdrop-blur">
-            <div className="container-page flex items-center justify-between py-4">
-              <a href="/" className="font-bold tracking-tight">
-                <span className="text-emerald-400">Bidd</span>
-                akika
-              </a>
-              <TopNav />
-            </div>
-          </header>
+          {/* ✅ TopNav kendi header’ını çiziyor. Burada ekstra wrapper/header YOK. */}
+          <TopNav />
 
-          <main>{children}</main>
+          {/* ✅ Nav boşluğunu sıfırlamak için */}
+          <main className="min-h-[calc(100vh-56px)]">{children}</main>
         </AuthProvider>
       </body>
     </html>

@@ -9,3 +9,13 @@ body {
 .container-page {
   @apply max-w-5xl mx-auto px-4 py-8;
 }
+/* iOS / mobil: sticky header + backdrop daha akıcı */
+header {
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+/* mobilde tıklama gecikmesini azaltır */
+button, a {
+  -webkit-tap-highlight-color: transparent;
+}
