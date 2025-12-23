@@ -5,6 +5,7 @@ import React, { useEffect, useMemo, useState, FormEvent } from "react";
 import { Protected } from "@/components/Protected";
 import { useAuth } from "@/context/AuthContext";
 import { getFirestoreDb } from "@/lib/firebase/client";
+
 import {
   collection,
   getDocs,
@@ -15,12 +16,12 @@ import {
   updateDoc,
   serverTimestamp,
   getDoc,
-  addDoc
+  addDoc,
+  arrayUnion
 } from "firebase/firestore";
-import { arrayUnion } from "firebase/firestore";
 
 /* ------------------------------------------------
-  PRICE HISTORY (KALDI)
+  PRICE HISTORY (HOTEL OFFERS)
 ------------------------------------------------- */
 type PriceHistoryItem = {
   actor: "hotel" | "guest";
@@ -30,7 +31,11 @@ type PriceHistoryItem = {
   createdAt: any; // serverTimestamp
 };
 
-async function pushOfferPriceHistory(db: any, offerId: string, item: Omit<PriceHistoryItem, "createdAt">) {
+async function pushOfferPriceHistory(
+  db: any,
+  offerId: string,
+  item: Omit<PriceHistoryItem, "createdAt">
+) {
   const ref = doc(db, "offers", offerId);
   await updateDoc(ref, {
     priceHistory: arrayUnion({
@@ -41,7 +46,7 @@ async function pushOfferPriceHistory(db: any, offerId: string, item: Omit<PriceH
 }
 
 /* ------------------------------------------------
-  HOTEL OFFER TYPES (KALDI)
+  HOTEL OFFER TYPES
 ------------------------------------------------- */
 type OfferMode = "simple" | "refreshable" | "negotiable";
 type PaymentMethod = "card3d" | "payAtHotel";
@@ -91,7 +96,6 @@ interface RequestSummary {
   status?: string | null;
   childrenAges?: number[];
 
-
   type?: string;
   isGroup?: boolean;
 
@@ -118,11 +122,9 @@ interface RoomTypeProfile {
   maxAdults?: number | null;
   maxChildren?: number | null;
   imageUrls?: string[];
-    // ✅ görseller (hangi isimle gelirse gelsin)
   images?: string[];
   gallery?: string[];
   photos?: string[];
-
 }
 
 interface HotelProfile {
@@ -160,11 +162,9 @@ interface HotelInfo {
 }
 
 /* ------------------------------------------------
-  PACKAGE (PREMIUM) TYPES
-  - packageRequests + packageOffers + agency profile
+  PACKAGE TYPES
 ------------------------------------------------- */
 type PackageRequestStatus = "open" | "expired" | "accepted" | "deleted";
-
 type PackagePaymentMethod = "card3d" | "transfer" | "payAtDoor";
 
 type PackageRequest = {
@@ -187,7 +187,6 @@ type PackageRequest = {
   roomsCount?: number | null;
   roomTypes?: string[] | null;
 
-  // ihtiyaçlar
   needs?: string[] | null;
 
   wantsTours?: boolean | null;
@@ -239,7 +238,6 @@ type PackageOffer = {
     other?: number;
   };
 
-  // plan
   packageDetails?: {
     hotelName?: string;
     roomType?: string;
@@ -257,7 +255,6 @@ type PackageOffer = {
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
 
-  // opsiyonel: ödeme seçeneklerini acenta belirtebilir
   paymentOptions?: {
     card3d?: boolean;
     transfer?: boolean;
@@ -290,26 +287,6 @@ const MODE_LABEL_PUBLIC: Record<OfferMode, string> = {
   negotiable: "Pazarlıklı teklif"
 };
 
-const BOARD_LABEL: Record<string, string> = {
-  RO: "Sadece oda (RO)",
-  BB: "Oda + Kahvaltı (BB)",
-  HB: "Yarım pansiyon (HB)",
-  FB: "Tam pansiyon (FB)",
-  AI: "Her şey dahil (AI)",
-  UAI: "Ultra her şey dahil (UAI)"
-};
-
-const FEATURE_LABEL: Record<string, string> = {
-  pool: "Havuz",
-  spa: "Spa / Wellness",
-  parking: "Otopark",
-  wifi: "Ücretsiz Wi-Fi",
-  seaView: "Deniz manzarası",
-  balcony: "Balkon",
-  family: "Aile odaları",
-  petFriendly: "Evcil hayvan kabul edilir"
-};
-
 /* ------------------------------------------------
   HELPERS
 ------------------------------------------------- */
@@ -329,44 +306,32 @@ function money(n: any, currency: string) {
   return `${val.toLocaleString("tr-TR")} ${currency || "TRY"}`;
 }
 
-function roomTypeLabel(type?: string) {
-  switch (type) {
-    case "standard":
-      return "Standart oda";
-    case "family":
-      return "Aile odası";
-    case "suite":
-      return "Suit oda";
-    case "deluxe":
-      return "Deluxe oda";
-    default:
-      return "Fark etmez";
-  }
-}
-
 function parseDate(value?: string | null): Date | null {
   if (!value) return null;
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
 }
-
 function normalized(d: Date) {
   const n = new Date(d);
   n.setHours(0, 0, 0, 0);
   return n;
 }
-
 function diffInDays(a: Date, b: Date) {
   const ms = normalized(a).getTime() - normalized(b).getTime();
   return Math.floor(ms / (1000 * 60 * 60 * 24));
 }
-
 function calcNightsFromISO(a?: string | null, b?: string | null) {
   const d1 = parseDate(a);
   const d2 = parseDate(b);
   if (!d1 || !d2) return 1;
   const diff = diffInDays(d2, d1);
   return diff > 0 ? diff : 1;
+}
+
+function chunkArray<T>(arr: T[], size = 10) {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
 }
 
 function computeRequestStatus(req: RequestSummary, hasAcceptedOffer: boolean) {
@@ -429,11 +394,33 @@ function formatRemainingPkg(createdAt: Timestamp | undefined, minutes: number, n
   return { text: `${hours} sa ${mins} dk ${secs} sn`, color, expired: false, ratio };
 }
 
+
+
 function badgeByPkgStatus(status: PackageRequestStatus) {
   if (status === "accepted") return "bg-emerald-500/10 text-emerald-300 border-emerald-500/40";
   if (status === "expired") return "bg-red-500/10 text-red-300 border-red-500/40";
   if (status === "deleted") return "bg-slate-500/10 text-slate-300 border-slate-500/40";
   return "bg-sky-500/10 text-sky-300 border-sky-500/40";
+}
+
+function getHistoryMeta(offer: GuestOffer) {
+  const hist = Array.isArray(offer.priceHistory) ? offer.priceHistory : [];
+  const sorted = hist
+    .slice()
+    .sort((a: any, b: any) => (a?.createdAt?.toMillis?.() ?? 0) - (b?.createdAt?.toMillis?.() ?? 0));
+  const first = sorted[0]?.price ? Number(sorted[0].price) : null;
+  const hotelUpdate = [...sorted].reverse().find((x: any) => x.actor === "hotel" && x.kind === "update");
+  const hasHotelUpdate = !!hotelUpdate;
+  return { firstPrice: first, hasHotelUpdate };
+}
+
+function guessBestPackageOffer(offers: PackageOffer[]) {
+  if (!offers.length) return null;
+  const sorted = offers
+    .filter((o) => o.status !== "rejected" && o.status !== "withdrawn")
+    .slice()
+    .sort((a, b) => Number(a.totalPrice) - Number(b.totalPrice));
+  return sorted[0] ?? offers[0];
 }
 
 function cancellationLabelFromOffer(
@@ -461,33 +448,6 @@ async function createNotification(db: ReturnType<typeof getFirestoreDb>, to: str
   } catch (e) {
     console.error("createNotification error:", e);
   }
-}
-
-function chunkArray<T>(arr: T[], size = 10) {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
-
-function getHistoryMeta(offer: GuestOffer) {
-  const hist = Array.isArray(offer.priceHistory) ? offer.priceHistory : [];
-  const sorted = hist
-    .slice()
-    .sort((a: any, b: any) => (a?.createdAt?.toMillis?.() ?? 0) - (b?.createdAt?.toMillis?.() ?? 0));
-  const first = sorted[0]?.price ? Number(sorted[0].price) : null;
-  const hotelUpdate = [...sorted].reverse().find((x: any) => x.actor === "hotel" && x.kind === "update");
-  const hasHotelUpdate = !!hotelUpdate;
-  return { firstPrice: first, hasHotelUpdate };
-}
-
-function guessBestPackageOffer(offers: PackageOffer[]) {
-  if (!offers.length) return null;
-  // basit: en düşük fiyat, status rejected değil
-  const sorted = offers
-    .filter((o) => o.status !== "rejected" && o.status !== "withdrawn")
-    .slice()
-    .sort((a, b) => Number(a.totalPrice) - Number(b.totalPrice));
-  return sorted[0] ?? offers[0];
 }
 export default function GuestOffersPage() {
   const router = useRouter();
@@ -565,252 +525,6 @@ export default function GuestOffersPage() {
   }, []);
 
   /* ---------------------------
-    HOTEL REQUEST EXPIRED ACTIONS
-  --------------------------- */
-  async function handleRestartRequest(req: RequestSummary) {
-    try {
-      await updateDoc(doc(db, "requests", req.id), { createdAt: serverTimestamp(), status: "open" });
-      setRequestsMap((prev) => {
-        const copy = { ...prev };
-        if (copy[req.id]) copy[req.id] = { ...copy[req.id], createdAt: Timestamp.fromDate(new Date()), status: "open" };
-        return copy;
-      });
-      setActionMessage("Talebin yeniden başlatıldı. Oteller yeniden teklif verebilecek.");
-    } catch (err) {
-      console.error(err);
-      setActionError("Talep yeniden başlatılırken hata oluştu.");
-    }
-  }
-
-  function handleEditRequest(req: RequestSummary) {
-    router.push(`/guest/requests/new?requestId=${req.id}`);
-  }
-
-  async function handleDeleteRequest(req: RequestSummary) {
-    const ok = window.confirm("Bu talebi silmek istediğine emin misin?");
-    if (!ok) return;
-    try {
-      await updateDoc(doc(db, "requests", req.id), { status: "deleted", deletedAt: serverTimestamp() });
-      setRequestsMap((prev) => {
-        const copy = { ...prev };
-        delete copy[req.id];
-        return copy;
-      });
-      setActionMessage("Talebin silindi.");
-    } catch (err) {
-      console.error(err);
-      setActionError("Talep silinirken hata oluştu.");
-    }
-  }
-
-  /* ---------------------------
-    PACKAGE ACTIONS (premium)
-  --------------------------- */
-  function openPackageModal(p: PackageRequest) {
-    setPkgModalReq(p);
-    setPkgModalOpen(true);
-  }
-
-  function closePackageModal() {
-    setPkgModalOpen(false);
-    setPkgModalReq(null);
-  }
-
-  async function restartPackageRequest(p: PackageRequest) {
-    try {
-      await updateDoc(doc(db, "packageRequests", p.id), { createdAt: serverTimestamp(), status: "open" });
-setPackageRequests((prev) =>
-  prev.map((x) => (x.id === p.id ? { ...x, createdAt: Timestamp.fromDate(new Date()), status: "open" } : x))
-);
-
-      setActionMessage("Paket talebin yeniden başlatıldı. Acentalar tekrar teklif verebilir.");
-    } catch (e) {
-      console.error(e);
-      setActionError("Paket talebi yeniden başlatılırken hata oluştu.");
-    }
-  }
-
-  function editPackageRequest(p: PackageRequest) {
-    router.push(`/guest/package-requests/new?requestId=${p.id}`);
-  }
-
-  async function deletePackageRequest(p: PackageRequest) {
-    const ok1 = window.confirm("Bu paket talebini silmek istediğine emin misin?");
-    if (!ok1) return;
-    const ok2 = window.confirm("Son kez soruyorum: Silinsin mi? (Geri alamazsın)");
-    if (!ok2) return;
-
-    try {
-      await updateDoc(doc(db, "packageRequests", p.id), { status: "deleted", deletedAt: serverTimestamp() });
-      setPackageRequests((prev) => prev.filter((x) => x.id !== p.id));
-      setActionMessage("Paket talebi silindi.");
-    } catch (e) {
-      console.error(e);
-      setActionError("Paket talebi silinirken hata oluştu.");
-    }
-  }
-
-  function openPkgPayment(req: PackageRequest, offer: PackageOffer) {
-    setPkgPayReq(req);
-    setPkgPayOffer(offer);
-    setPkgPayMethod("transfer");
-    setPkgPayError(null);
-    setPkgPayMessage(null);
-    setPkgPayOpen(true);
-  }
-
-  function closePkgPayment() {
-    setPkgPayOpen(false);
-    setPkgPayReq(null);
-    setPkgPayOffer(null);
-    setPkgPayError(null);
-    setPkgPayMessage(null);
-    setPkgThreeDSOpen(false);
-  }
-
-  async function acceptPackageAndCreateBooking(method: PackagePaymentMethod) {
-    if (!profile?.uid || !pkgPayReq || !pkgPayOffer) return;
-
-    try {
-      setPkgPaySaving(true);
-      setPkgPayError(null);
-      setPkgPayMessage(null);
-
-      // ödeme statüsü
-      const paymentStatus =
-        method === "card3d" ? "paid" : method === "transfer" ? "transfer_pending" : "pay_at_door";
-
-      // booking oluştur (package)
-const agency = agenciesMap[pkgPayOffer.agencyId];
-const ap = agency?.agencyProfile ?? null;
-
-const agencySnapshot = {
-  id: pkgPayOffer.agencyId,
-  displayName: agency?.displayName ?? pkgPayOffer.agencyName ?? null,
-  email: agency?.email ?? null,
-  businessName: ap?.businessName ?? null,
-  phone: ap?.phone ?? null,
-  address: ap?.address ?? null,
-  city: ap?.city ?? null,
-  district: ap?.district ?? null,
-  taxNo: ap?.taxNo ?? null,
-  about: ap?.about ?? null
-};
-
-const requestSnapshot = pkgPayReq;   // misafirin paket talebi (tamamı)
-const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
-
-
-      const bkRef = await addDoc(collection(db, "bookings"), {
-        type: "package",
-
-        packageRequestId: pkgPayReq.id,
-        packageOfferId: pkgPayOffer.id,
-
-        guestId: profile.uid,
-        guestName: profile.displayName ?? null,
-        guestEmail: profile.email ?? null,
-        // ✅ MISAFIRIN ILETISIMI — kabul/ödeme sonrası acenta görebilsin diye booking’de tut
-        guestPhone: profile.phoneNumber ?? null,
-
-        agencyId: pkgPayOffer.agencyId ?? null,
-        agencyName: pkgPayOffer.agencyName ?? null,
-          // ✅ SNAPSHOTLAR
-  agencySnapshot,
-  requestSnapshot,
-  offerSnapshot,
-        // paket özeti
-        title: pkgPayReq.title ?? null,
-        country: pkgPayReq.country ?? "Türkiye",
-        city: pkgPayReq.city ?? null,
-        district: pkgPayReq.district ?? null,
-        checkIn: pkgPayReq.dateFrom ?? null,
-        checkOut: pkgPayReq.dateTo ?? null,
-        nights: pkgPayReq.nights ?? calcNightsFromISO(pkgPayReq.dateFrom, pkgPayReq.dateTo),
-
-        paxAdults: pkgPayReq.paxAdults ?? 0,
-        paxChildren: pkgPayReq.paxChildren ?? 0,
-        childrenAges: pkgPayReq.childrenAges ?? null,
-        roomsCount: pkgPayReq.roomsCount ?? null,
-        roomTypes: pkgPayReq.roomTypes ?? null,
-
-        needs: pkgPayReq.needs ?? null,
-        wantsTransfer: pkgPayReq.wantsTransfer ?? null,
-        transferType: pkgPayReq.transferType ?? null,
-        transferNotes: pkgPayReq.transferNotes ?? null,
-        wantsTours: pkgPayReq.wantsTours ?? null,
-        tourCount: pkgPayReq.tourCount ?? null,
-        tourNotes: pkgPayReq.tourNotes ?? null,
-        wantsCar: pkgPayReq.wantsCar ?? null,
-        carType: pkgPayReq.carType ?? null,
-        licenseYear: pkgPayReq.licenseYear ?? null,
-        carNotes: pkgPayReq.carNotes ?? null,
-        extras: pkgPayReq.extras ?? null,
-        activities: pkgPayReq.activities ?? null,
-        note: pkgPayReq.note ?? null,
-
-        // fiyat
-        totalPrice: Number(pkgPayOffer.totalPrice ?? 0),
-        currency: pkgPayOffer.currency ?? "TRY",
-        paymentMethod: method,
-        paymentStatus,
-        status: "active",
-        createdAt: serverTimestamp(),
-
-        // kırılım + plan
-        packageBreakdown: pkgPayOffer.breakdown ?? null,
-        packageDetails: pkgPayOffer.packageDetails ?? null,
-        offerNote: pkgPayOffer.note ?? null
-      });
-
-      // packageOffer accepted
-      await updateDoc(doc(db, "packageOffers", pkgPayOffer.id), {
-        status: "accepted",
-        acceptedAt: serverTimestamp(),
-        bookingId: bkRef.id
-      });
-
-      // packageRequest accepted
-      await updateDoc(doc(db, "packageRequests", pkgPayReq.id), {
-        status: "accepted",
-        acceptedOfferId: pkgPayOffer.id,
-        acceptedAt: serverTimestamp(),
-        bookingId: bkRef.id
-      });
-
-      // notifications
-      await createNotification(db, profile.uid, {
-        type: "packageBookingCreated",
-        bookingId: bkRef.id,
-        requestId: pkgPayReq.id,
-        offerId: pkgPayOffer.id
-      });
-      await createNotification(db, pkgPayOffer.agencyId, {
-        type: "packageBookingCreated",
-        bookingId: bkRef.id,
-        requestId: pkgPayReq.id,
-        offerId: pkgPayOffer.id
-      });
-
-      // local state güncelle
-      setPackageRequests((prev) =>
-        prev.map((x) => (x.id === pkgPayReq.id ? { ...x, status: "accepted", acceptedOfferId: pkgPayOffer.id, bookingId: bkRef.id } : x))
-      );
-
-      setPkgPayMessage("Paket kabul edildi. Rezervasyon oluşturuldu. Rezervasyonlarım sayfasına yönlendiriliyorsun...");
-      setTimeout(() => {
-        closePkgPayment();
-        router.push("/guest/bookings");
-      }, 1200);
-    } catch (e) {
-      console.error(e);
-      setPkgPayError("Paket kabul/ödeme sırasında hata oluştu.");
-    } finally {
-      setPkgPaySaving(false);
-    }
-  }
-
-  /* ---------------------------
     HOTEL OFFER ACTIONS
   --------------------------- */
   function openDetails(o: GuestOffer) {
@@ -860,7 +574,6 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
         guestCounterAt: serverTimestamp()
       });
 
-      // price history
       await pushOfferPriceHistory(db, offer.id, {
         actor: "guest",
         kind: "counter",
@@ -886,7 +599,6 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
     setActionMessage("Bu teklifi seçtin. Ödemeye ilerleyerek rezervasyon oluşturabilirsin.");
     setActionError(null);
   }
-
   function handleCancelSelection() {
     setSelectedForPaymentId(null);
   }
@@ -929,33 +641,47 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
       setSavingPayment(true);
 
       const bookingRef = await addDoc(collection(db, "bookings"), {
+        type: "hotel",
+
         offerId: offer.id,
         requestId: req?.id ?? offer.requestId,
+
         guestId: profile.uid,
+        guestName: profile.displayName || (req as any)?.guestName || (req as any)?.contactName || null,
+        guestEmail: profile.email || (req as any)?.guestEmail || null,
+        guestPhone: (req as any)?.guestPhone || null,
+
         hotelId: hotel?.id ?? offer.hotelId,
         hotelName: hotel?.displayName || offer.hotelName || null,
+
         city: req?.city ?? null,
         district: req?.district ?? null,
         checkIn: req?.checkIn ?? null,
         checkOut: req?.checkOut ?? null,
         adults: req?.adults ?? null,
         childrenCount: req?.childrenCount ?? null,
+        childrenAges: (req as any)?.childrenAges ?? null,
         roomsCount: req?.roomsCount ?? null,
+
         totalPrice: offer.totalPrice,
         currency: offer.currency,
+
         paymentMethod: finalPaymentMethod,
-        paymentStatus: finalPaymentMethod === "card3d" ? "paid" : "payAtHotel",
+        paymentStatus: finalPaymentMethod === "card3d" ? "paid" : "pending",
+
         createdAt: serverTimestamp(),
         status: "active",
-        guestName: profile.displayName || (req as any)?.guestName || (req as any)?.contactName || null,
-        guestEmail: profile.email || (req as any)?.guestEmail || null,
-        guestPhone: (req as any)?.guestPhone || null,
+
         roomBreakdown: offer.roomBreakdown ?? null,
         cancellationPolicyType: offer.cancellationPolicyType ?? null,
         cancellationPolicyDays: offer.cancellationPolicyDays ?? null
       });
 
-      await updateDoc(doc(db, "offers", offer.id), { status: "accepted", acceptedAt: serverTimestamp(), bookingId: bookingRef.id });
+      await updateDoc(doc(db, "offers", offer.id), {
+        status: "accepted",
+        acceptedAt: serverTimestamp(),
+        bookingId: bookingRef.id
+      });
 
       await createNotification(db, profile.uid, { type: "bookingCreated", bookingId: bookingRef.id, offerId: offer.id });
       await createNotification(db, hotel?.id, { type: "bookingCreated", bookingId: bookingRef.id, offerId: offer.id });
@@ -1016,7 +742,202 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
   }
 
   /* ---------------------------
-    LOAD (rules patlatmadan)
+    PACKAGE ACTIONS
+  --------------------------- */
+  function openPackageModal(p: PackageRequest) {
+    setPkgModalReq(p);
+    setPkgModalOpen(true);
+  }
+  function closePackageModal() {
+    setPkgModalOpen(false);
+    setPkgModalReq(null);
+  }
+
+  async function restartPackageRequest(p: PackageRequest) {
+    try {
+      await updateDoc(doc(db, "packageRequests", p.id), { createdAt: serverTimestamp(), status: "open" });
+      setPackageRequests((prev) =>
+        prev.map((x) => (x.id === p.id ? { ...x, createdAt: Timestamp.fromDate(new Date()), status: "open" } : x))
+      );
+      setActionMessage("Paket talebin yeniden başlatıldı. Acentalar tekrar teklif verebilir.");
+    } catch (e) {
+      console.error(e);
+      setActionError("Paket talebi yeniden başlatılırken hata oluştu.");
+    }
+  }
+
+  function editPackageRequest(p: PackageRequest) {
+    router.push(`/guest/package-requests/new?requestId=${p.id}`);
+  }
+
+  async function deletePackageRequest(p: PackageRequest) {
+    const ok1 = window.confirm("Bu paket talebini silmek istediğine emin misin?");
+    if (!ok1) return;
+    const ok2 = window.confirm("Son kez soruyorum: Silinsin mi? (Geri alamazsın)");
+    if (!ok2) return;
+
+    try {
+      await updateDoc(doc(db, "packageRequests", p.id), { status: "deleted", deletedAt: serverTimestamp() });
+      setPackageRequests((prev) => prev.filter((x) => x.id !== p.id));
+      setActionMessage("Paket talebi silindi.");
+    } catch (e) {
+      console.error(e);
+      setActionError("Paket talebi silinirken hata oluştu.");
+    }
+  }
+
+  function openPkgPayment(req: PackageRequest, offer: PackageOffer) {
+    setPkgPayReq(req);
+    setPkgPayOffer(offer);
+    setPkgPayMethod("transfer");
+    setPkgPayError(null);
+    setPkgPayMessage(null);
+    setPkgPayOpen(true);
+  }
+
+  function closePkgPayment() {
+    setPkgPayOpen(false);
+    setPkgPayReq(null);
+    setPkgPayOffer(null);
+    setPkgPayError(null);
+    setPkgPayMessage(null);
+    setPkgThreeDSOpen(false);
+  }
+
+  async function acceptPackageAndCreateBooking(method: PackagePaymentMethod) {
+    if (!profile?.uid || !pkgPayReq || !pkgPayOffer) return;
+
+    try {
+      setPkgPaySaving(true);
+      setPkgPayError(null);
+      setPkgPayMessage(null);
+
+      const paymentStatus =
+        method === "card3d" ? "paid" : method === "transfer" ? "transfer_pending" : "pay_at_door";
+
+      const agency = agenciesMap[pkgPayOffer.agencyId];
+      const ap = agency?.agencyProfile ?? null;
+
+      const agencySnapshot = {
+        id: pkgPayOffer.agencyId,
+        displayName: agency?.displayName ?? pkgPayOffer.agencyName ?? null,
+        email: agency?.email ?? null,
+        businessName: ap?.businessName ?? null,
+        phone: ap?.phone ?? null,
+        address: ap?.address ?? null,
+        city: ap?.city ?? null,
+        district: ap?.district ?? null,
+        taxNo: ap?.taxNo ?? null,
+        about: ap?.about ?? null
+      };
+
+      const requestSnapshot = pkgPayReq;
+      const offerSnapshot = pkgPayOffer;
+
+      const bkRef = await addDoc(collection(db, "bookings"), {
+        type: "package",
+
+        packageRequestId: pkgPayReq.id,
+        packageOfferId: pkgPayOffer.id,
+
+        guestId: profile.uid,
+        guestName: profile.displayName ?? null,
+        guestEmail: profile.email ?? null,
+        guestPhone: profile.phoneNumber ?? null,
+
+        agencyId: pkgPayOffer.agencyId ?? null,
+        agencyName: pkgPayOffer.agencyName ?? null,
+
+        agencySnapshot,
+        requestSnapshot,
+        offerSnapshot,
+
+        title: pkgPayReq.title ?? null,
+        country: pkgPayReq.country ?? "Türkiye",
+        city: pkgPayReq.city ?? null,
+        district: pkgPayReq.district ?? null,
+        checkIn: pkgPayReq.dateFrom ?? null,
+        checkOut: pkgPayReq.dateTo ?? null,
+        nights: pkgPayReq.nights ?? calcNightsFromISO(pkgPayReq.dateFrom, pkgPayReq.dateTo),
+
+        paxAdults: pkgPayReq.paxAdults ?? 0,
+        paxChildren: pkgPayReq.paxChildren ?? 0,
+        childrenAges: pkgPayReq.childrenAges ?? null,
+        roomsCount: pkgPayReq.roomsCount ?? null,
+        roomTypes: pkgPayReq.roomTypes ?? null,
+
+        needs: pkgPayReq.needs ?? null,
+        wantsTransfer: pkgPayReq.wantsTransfer ?? null,
+        transferType: pkgPayReq.transferType ?? null,
+        transferNotes: pkgPayReq.transferNotes ?? null,
+        wantsTours: pkgPayReq.wantsTours ?? null,
+        tourCount: pkgPayReq.tourCount ?? null,
+        tourNotes: pkgPayReq.tourNotes ?? null,
+        wantsCar: pkgPayReq.wantsCar ?? null,
+        carType: pkgPayReq.carType ?? null,
+        licenseYear: pkgPayReq.licenseYear ?? null,
+        carNotes: pkgPayReq.carNotes ?? null,
+        extras: pkgPayReq.extras ?? null,
+        activities: pkgPayReq.activities ?? null,
+        note: pkgPayReq.note ?? null,
+
+        totalPrice: Number(pkgPayOffer.totalPrice ?? 0),
+        currency: pkgPayOffer.currency ?? "TRY",
+        paymentMethod: method,
+        paymentStatus,
+
+        status: "active",
+        createdAt: serverTimestamp(),
+
+        packageBreakdown: pkgPayOffer.breakdown ?? null,
+        packageDetails: pkgPayOffer.packageDetails ?? null,
+        offerNote: pkgPayOffer.note ?? null
+      });
+
+      await updateDoc(doc(db, "packageOffers", pkgPayOffer.id), {
+        status: "accepted",
+        acceptedAt: serverTimestamp(),
+        bookingId: bkRef.id
+      });
+
+      await updateDoc(doc(db, "packageRequests", pkgPayReq.id), {
+        status: "accepted",
+        acceptedOfferId: pkgPayOffer.id,
+        acceptedAt: serverTimestamp(),
+        bookingId: bkRef.id
+      });
+
+      await createNotification(db, profile.uid, {
+        type: "packageBookingCreated",
+        bookingId: bkRef.id,
+        requestId: pkgPayReq.id,
+        offerId: pkgPayOffer.id
+      });
+      await createNotification(db, pkgPayOffer.agencyId, {
+        type: "packageBookingCreated",
+        bookingId: bkRef.id,
+        requestId: pkgPayReq.id,
+        offerId: pkgPayOffer.id
+      });
+
+      setPackageRequests((prev) =>
+        prev.map((x) => (x.id === pkgPayReq.id ? { ...x, status: "accepted", acceptedOfferId: pkgPayOffer.id, bookingId: bkRef.id } : x))
+      );
+
+      setPkgPayMessage("Paket kabul edildi. Rezervasyon oluşturuldu. Rezervasyonlarım sayfasına yönlendiriliyorsun...");
+      setTimeout(() => {
+        closePkgPayment();
+        router.push("/guest/bookings");
+      }, 1200);
+    } catch (e) {
+      console.error(e);
+      setPkgPayError("Paket kabul/ödeme sırasında hata oluştu.");
+    } finally {
+      setPkgPaySaving(false);
+    }
+  }
+  /* ---------------------------
+    LOAD
   --------------------------- */
   useEffect(() => {
     async function load() {
@@ -1045,9 +966,8 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
               checkOut: v.checkOut,
               adults: v.adults,
               childrenCount: v.childrenCount ?? 0,
-              roomsCount: v.roomsCount ?? 1,
               childrenAges: Array.isArray(v.childrenAges) ? v.childrenAges : [],
-
+              roomsCount: v.roomsCount ?? 1,
               roomTypes: v.roomTypes ?? [],
               responseDeadlineMinutes: v.responseDeadlineMinutes ?? 60,
               createdAt: v.createdAt,
@@ -1075,15 +995,15 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
 
         const reqMap: Record<string, RequestSummary> = {};
         reqs.forEach((r) => (reqMap[r.id] = r));
-
         const requestIds = reqs.map((r) => r.id);
 
-        // 2) hotel offers (requestId IN chunk)
+        // 2) hotel offers
         const offersOut: GuestOffer[] = [];
         for (const part of chunkArray(requestIds, 10)) {
           if (!part.length) continue;
           const qOff = query(collection(db, "offers"), where("requestId", "in", part));
           const snapOff = await getDocs(qOff);
+
           snapOff.docs.forEach((d) => {
             const v = d.data() as any;
             offersOut.push({
@@ -1109,9 +1029,10 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
         }
         offersOut.sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0));
 
-        // 3) hotel profiles (getDoc)
+        // 3) hotel profiles
         const hotelIds = Array.from(new Set(offersOut.map((o) => o.hotelId).filter(Boolean)));
         const hotelMap: Record<string, HotelInfo> = {};
+
         await Promise.all(
           hotelIds.map(async (hid) => {
             const snap = await getDoc(doc(db, "users", hid));
@@ -1128,73 +1049,132 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
         );
 
         // 4) packageRequests
-        const snapPkg = await getDocs(
-          query(collection(db, "packageRequests"), where("createdByRole", "==", "guest"), where("createdById", "==", profile.uid))
-        );
+      // 4) packageRequests (önce uid ile dene)
+let snapPkg = await getDocs(
+  query(
+    collection(db, "packageRequests"),
+    where("createdByRole", "==", "guest"),
+    where("createdById", "==", profile.uid)
+  )
+);
 
-        const pkgs: PackageRequest[] = snapPkg.docs
-          .map((d) => {
-            const v = d.data() as any;
-            return {
-              id: d.id,
-              title: v.title ?? null,
-              country: v.country ?? "Türkiye",
-              city: v.city ?? null,
-              district: v.district ?? null,
+// Eğer boşsa: farklı alan isimleri / farklı uid ihtimali için geniş çekip client-side filtrele
+if (snapPkg.empty) {
+  const allSnap = await getDocs(
+    query(collection(db, "packageRequests"), where("createdByRole", "==", "guest"))
+  );
 
-              dateFrom: v.dateFrom ?? v.checkIn ?? null,
-              dateTo: v.dateTo ?? v.checkOut ?? null,
-              nights: v.nights ?? calcNightsFromISO(v.dateFrom ?? v.checkIn, v.dateTo ?? v.checkOut),
+  const myUid = (profile.uid || "").toLowerCase();
+  const myEmail = (profile.email || "").toLowerCase();
+  const myName = (profile.displayName || "").toLowerCase();
+  const myPhone = (profile.phoneNumber || "").replace(/\D/g, "");
 
-              paxAdults: v.paxAdults ?? v.adults ?? 0,
-              paxChildren: v.paxChildren ?? v.childrenCount ?? 0,
-              childrenAges: Array.isArray(v.childrenAges) ? v.childrenAges : null,
+  const filteredDocs = allSnap.docs.filter((d) => {
+    const v: any = d.data();
 
-              roomsCount: v.roomsCount ?? null,
-              roomTypes: Array.isArray(v.roomTypes) ? v.roomTypes : null,
+    const createdById = String(v.createdById || "").toLowerCase();
+    const createdByName = String(v.createdByName || "").toLowerCase();
+    const createdByEmail = String(v.createdByEmail || "").toLowerCase();
+    const createdByPhone = String(v.createdByPhone || "").replace(/\D/g, "");
 
-              needs: Array.isArray(v.needs) ? v.needs : null,
+    const contactEmail = String(v.contact?.email || "").toLowerCase();
+    const contactName = String(v.contact?.name || "").toLowerCase();
+    const contactPhone = String(v.contact?.phone || "").replace(/\D/g, "");
 
-              wantsTours: !!v.wantsTours,
-              tourCount: v.tourCount ?? null,
-              tourNotes: v.tourNotes ?? null,
+    // UID eşleşmesi (en güçlü)
+    if (createdById && myUid && createdById === myUid) return true;
 
-              wantsTransfer: !!v.wantsTransfer,
-              transferType: v.transferType ?? null,
-              transferNotes: v.transferNotes ?? null,
+    // Email eşleşmesi (çok güçlü)
+    if (myEmail && (createdByEmail === myEmail || contactEmail === myEmail)) return true;
 
-              wantsCar: !!v.wantsCar,
-              carType: v.carType ?? null,
-              licenseYear: v.licenseYear ?? null,
-              carNotes: v.carNotes ?? null,
+    // Telefon eşleşmesi (güçlü)
+    if (myPhone && (createdByPhone === myPhone || contactPhone === myPhone)) return true;
 
-              extras: Array.isArray(v.extras) ? v.extras : null,
-              activities: Array.isArray(v.activities) ? v.activities : null,
+    // İsim eşleşmesi (zayıf ama bazen kurtarır)
+    if (myName && (createdByName === myName || contactName === myName)) return true;
 
-              note: v.note ?? v.generalNote ?? null,
+    return false;
+  });
 
-              responseDeadlineMinutes: v.responseDeadlineMinutes ?? 180,
-              responseTimeAmount: v.responseTimeAmount ?? null,
-              responseTimeUnit: v.responseTimeUnit ?? null,
+  // snap gibi kullanmak için taklit ediyoruz
+  snapPkg = { docs: filteredDocs } as any;
+}
 
-              createdByRole: v.createdByRole ?? "guest",
-              createdById: v.createdById ?? profile.uid,
 
-              acceptedOfferId: v.acceptedOfferId ?? null,
-              bookingId: v.bookingId ?? null,
+   const pkgs: any[] = snapPkg.docs
+  .map((d) => {
+    const v = d.data() as any;
 
-              status: v.status ?? "open",
-              createdAt: v.createdAt
-            } as PackageRequest;
-          })
-          .filter((p) => p.status !== "deleted")
-          .sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0));
+    // 🔥 EN ÖNEMLİ: Firestore’daki her şeyi sakla
+    const raw = { id: d.id, ...v };
+
+    // UI için normalize (ama raw asla kaybolmaz)
+    return {
+      id: d.id,
+
+      // raw snapshot (modal bunu okuyacak)
+      raw,
+
+      // normalize alanlar (UI’nin hızlı kartları için)
+      title: v.title ?? null,
+      country: v.country ?? "Türkiye",
+      city: v.city ?? null,
+      district: v.district ?? null,
+
+      dateFrom: v.dateFrom ?? v.checkIn ?? null,
+      dateTo: v.dateTo ?? v.checkOut ?? null,
+      nights: v.nights ?? v.hotelNights ?? v.days ?? null,
+
+      paxAdults: v.paxAdults ?? v.adults ?? 0,
+      paxChildren: v.paxChildren ?? v.childrenCount ?? 0,
+      childrenAges: Array.isArray(v.childrenAges) ? v.childrenAges : null,
+
+      roomsCount: v.roomsCount ?? null,
+      roomTypes: Array.isArray(v.roomTypes) ? v.roomTypes : null,
+
+      needs: Array.isArray(v.needs) ? v.needs : null,
+
+      wantsTours: v.wantsTours ?? v.wantTours ?? false,
+      tourCount: v.tourCount ?? v.toursCount ?? null,
+      tourNotes: v.tourNotes ?? null,
+
+      wantsTransfer: v.wantsTransfer ?? v.wantTransfer ?? false,
+      transferType: v.transferType ?? null,
+      transferNotes: v.transferNotes ?? null,
+
+      wantsCar: v.wantsCar ?? v.wantCar ?? false,
+      carType: v.carType ?? null,
+      licenseYear: v.licenseYear ?? null,
+      carNotes: v.carNotes ?? null,
+
+      extras: Array.isArray(v.extras) ? v.extras : null,
+      activities: v.activities ?? null, // string de olabilir
+
+      note: v.note ?? v.notes ?? v.generalNote ?? null,
+
+      responseDeadlineMinutes: v.responseDeadlineMinutes ?? 180,
+      responseTimeAmount: v.responseTimeAmount ?? null,
+      responseTimeUnit: v.responseTimeUnit ?? null,
+
+      createdByRole: v.createdByRole ?? "guest",
+      createdById: v.createdById ?? v.guestId ?? null,
+
+      acceptedOfferId: v.acceptedOfferId ?? v.acceptedOffer ?? null,
+      bookingId: v.bookingId ?? null,
+
+      status: v.status ?? "open",
+      createdAt: v.createdAt
+    };
+  })
+  .filter((p) => p.status !== "deleted")
+  .sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0));
+
 
         // 5) packageOffers (requestId IN chunk)
         const pkgOffersMap: Record<string, PackageOffer[]> = {};
         const agencyIdsSet = new Set<string>();
-
         const pkgIds = pkgs.map((x) => x.id);
+
         for (const part of chunkArray(pkgIds, 10)) {
           if (!part.length) continue;
           const qPkgOff = query(collection(db, "packageOffers"), where("requestId", "in", part));
@@ -1233,7 +1213,7 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
           )
         );
 
-        // 6) agency profiles (getDoc)
+        // 6) agencies
         const agencies: Record<string, AgencyInfo> = {};
         await Promise.all(
           Array.from(agencyIdsSet).map(async (aid) => {
@@ -1266,6 +1246,7 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
 
     load();
   }, [authLoading, profile, db]);
+
   const acceptedRequestIds = useMemo(() => {
     const set = new Set<string>();
     offers.forEach((o) => {
@@ -1310,7 +1291,6 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
     }[] = [];
 
     const allRequests = Object.values(requestsMap).filter((r) => r.status !== "deleted");
-
     const q = qText.trim().toLowerCase();
 
     allRequests.forEach((req) => {
@@ -1335,7 +1315,6 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
 
       const offersForReq = filteredOffers.filter((o) => o.requestId === req.id);
 
-      // premium sıralama
       const scored = offersForReq.slice().sort((a, b) => {
         const score = (o: GuestOffer) => {
           let s = 0;
@@ -1363,18 +1342,17 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
     });
 
     return blocks.sort((a, b) => (b.request.createdAt?.toMillis?.() ?? 0) - (a.request.createdAt?.toMillis?.() ?? 0));
-  }, [
-    requestsMap,
-    filteredOffers,
-    acceptedRequestIds,
-    now,
-    qText,
-    typeFilter,
-    cityFilter,
-    boostNegotiable,
-    boostRefreshable
-  ]);
+  }, [requestsMap, filteredOffers, acceptedRequestIds, now, qText, typeFilter, cityFilter, boostNegotiable, boostRefreshable]);
 
+  // Paketleri ayır: kabul edilenler üstte
+  const pkgAcceptedList = useMemo(
+    () => packageRequests.filter((p) => (p.status ?? "") === "accepted" && !!p.bookingId),
+    [packageRequests]
+  );
+  const pkgOpenList = useMemo(
+    () => packageRequests.filter((p) => (p.status ?? "open") !== "accepted" && (p.status ?? "open") !== "deleted"),
+    [packageRequests]
+  );
   return (
     <Protected allowedRoles={["guest"]}>
       <div className="container-page space-y-6 relative">
@@ -1387,13 +1365,22 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
           </p>
 
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => router.push("/guest/requests/new")} className="rounded-full bg-emerald-500 text-slate-950 px-4 py-2 text-sm font-semibold hover:bg-emerald-400">
+            <button
+              onClick={() => router.push("/guest/requests/new")}
+              className="rounded-full bg-emerald-500 text-slate-950 px-4 py-2 text-sm font-semibold hover:bg-emerald-400"
+            >
               + Otel talebi
             </button>
-            <button onClick={() => router.push("/guest/group-request")} className="rounded-full border border-white/10 bg-white/5 text-slate-100 px-4 py-2 text-sm hover:bg-white/10">
+            <button
+              onClick={() => router.push("/guest/group-request")}
+              className="rounded-full border border-white/10 bg-white/5 text-slate-100 px-4 py-2 text-sm hover:bg-white/10"
+            >
               + Grup talebi
             </button>
-            <button onClick={() => router.push("/guest/package-requests/new")} className="rounded-full border border-white/10 bg-white/5 text-slate-100 px-4 py-2 text-sm hover:bg-white/10">
+            <button
+              onClick={() => router.push("/guest/package-requests/new")}
+              className="rounded-full border border-white/10 bg-white/5 text-slate-100 px-4 py-2 text-sm hover:bg-white/10"
+            >
               + Paket talebi
             </button>
           </div>
@@ -1403,10 +1390,14 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
         {(actionMessage || actionError) && (
           <div className="space-y-2">
             {actionMessage && (
-              <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-emerald-200 text-sm">{actionMessage}</div>
+              <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-emerald-200 text-sm">
+                {actionMessage}
+              </div>
             )}
             {actionError && (
-              <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-red-200 text-sm">{actionError}</div>
+              <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-red-200 text-sm">
+                {actionError}
+              </div>
             )}
           </div>
         )}
@@ -1416,7 +1407,12 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
           <div className="grid gap-3 md:grid-cols-12 items-end">
             <div className="md:col-span-4 space-y-1">
               <label className="text-[0.75rem] text-slate-200">Arama</label>
-              <input value={qText} onChange={(e) => setQText(e.target.value)} className="input" placeholder="şehir, not, id..." />
+              <input
+                value={qText}
+                onChange={(e) => setQText(e.target.value)}
+                className="input"
+                placeholder="şehir, not, id..."
+              />
             </div>
 
             <div className="md:col-span-2 space-y-1">
@@ -1492,363 +1488,479 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
 
         {loading && <p className="text-sm text-slate-400">Teklifler yükleniyor…</p>}
 
-        {!loading && groupedByRequest.length === 0 && packageRequests.length === 0 && (
+        {!loading && groupedByRequest.length === 0 && pkgOpenList.length === 0 && pkgAcceptedList.length === 0 && (
           <p className="text-sm text-slate-400">Henüz bir talebin veya teklif yok.</p>
         )}
 
-        {/* ✅ PACKAGE REQUESTS PREMIUM LIST */}
-        {typeFilter !== "hotel" && typeFilter !== "group" && packageRequests.length > 0 && (
+        {/* ✅ PACKAGE */}
+        {(typeFilter === "all" || typeFilter === "package") && (pkgAcceptedList.length > 0 || pkgOpenList.length > 0) && (
           <section className="space-y-3">
-            {packageRequests
-  .filter((p) => (cityFilter === "all" ? true : p.city === cityFilter))             
-   .filter((p) => {
-                const q = qText.trim().toLowerCase();
-                if (!q) return true;
-                const hay = [p.id, p.title, p.city, p.district, p.note, (p.needs || []).join(" ")]
-                  .filter(Boolean)
-                  .join(" ")
-                  .toLowerCase();
-                return hay.includes(q);
-              })
-              
-              .map((p) => {
-                const offersForReq = packageOffersByReq[p.id] ?? [];
-                const best = guessBestPackageOffer(offersForReq);
-                const pax = safeNum(p.paxAdults, 0) + safeNum(p.paxChildren, 0);
-                const nights = p.nights ?? calcNightsFromISO(p.dateFrom, p.dateTo);
+            {pkgAcceptedList.length > 0 && (
+              <div className="space-y-2">
+                <h3 className="text-sm font-semibold text-emerald-200">✅ Kabul edilen paketler</h3>
 
-                const deadlineMin = safeNum(p.responseDeadlineMinutes, 180);
-                const rem = formatRemainingPkg(p.createdAt, deadlineMin, now);
-                const st: PackageRequestStatus =
-                  (p.status as any) === "accepted" ? "accepted" :
-                  (p.status as any) === "deleted" ? "deleted" :
-                  rem.expired ? "expired" : "open";
-
-                const barColor =
-                  rem.color === "red" ? "bg-red-500" : rem.color === "yellow" ? "bg-amber-400" : "bg-emerald-500";
-
-                return (
-                  <div key={p.id} className={`rounded-2xl border border-slate-800 bg-slate-950/80 shadow shadow-slate-950/40 overflow-hidden ${st === "accepted" ? "ring-1 ring-emerald-500/20" : ""}`}>
-                    <div className="px-4 py-3 bg-slate-900/85 flex flex-wrap items-start justify-between gap-3">
+                {pkgAcceptedList
+                  .filter((p) => (cityFilter === "all" ? true : p.city === cityFilter))
+                  .filter((p) => {
+                    const q = qText.trim().toLowerCase();
+                    if (!q) return true;
+                    const hay = [p.id, p.title, p.city, p.district, p.note].filter(Boolean).join(" ").toLowerCase();
+                    return hay.includes(q);
+                  })
+                  .map((p) => (
+                    <div key={p.id} className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                       <div className="space-y-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="inline-flex items-center rounded-full border border-indigo-500/30 bg-indigo-500/10 px-3 py-1 text-[0.7rem] text-indigo-200">
-                            🧳 Paket talebi
-                          </span>
-                          <span className="text-[0.7rem] text-slate-500">#{p.id}</span>
-                          <span className={`inline-flex items-center rounded-full border px-3 py-1 text-[0.7rem] ${badgeByPkgStatus(st)}`}>
-                            {st === "open" ? "Açık" : st === "expired" ? "Süre doldu" : st === "accepted" ? "Kabul edildi" : "Silindi"}
-                          </span>
-                          <span className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[0.7rem] text-slate-200">
-                            Teklif: <b className="ml-1 text-white">{offersForReq.length}</b>
-                          </span>
+                        <div className="text-slate-100 font-semibold">
+                          {p.title || "Paket"} • {safeStr(p.city)}{p.district ? ` / ${p.district}` : ""}
                         </div>
-
-                        <p className="text-slate-100 text-sm font-semibold">
-                          {p.title || "Paket talebi"} • {safeStr(p.city)}{p.district ? ` / ${p.district}` : ""}
-                        </p>
-
-                        <p className="text-[0.75rem] text-slate-300">
-                          {safeStr(p.dateFrom)} – {safeStr(p.dateTo)} • {nights} gece • {pax} kişi
-                          {p.roomsCount ? ` • ${p.roomsCount} oda` : ""}
-                        </p>
-
-                        <div className="mt-2 w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                          <div className={`h-full ${barColor}`} style={{ width: `${Math.round(rem.ratio * 100)}%` }} />
+                        <div className="text-[0.8rem] text-slate-300">
+                          {safeStr(p.dateFrom)} – {safeStr(p.dateTo)} • Booking ID:{" "}
+                          <b className="text-slate-100">{p.bookingId}</b>
                         </div>
-                        <p className={`text-[0.75rem] font-semibold ${rem.color === "red" ? "text-red-300" : rem.color === "yellow" ? "text-amber-200" : "text-emerald-200"}`}>
-                          {rem.text}
-                        </p>
+                        <div className="text-[0.75rem] text-slate-400">
+                          Bu paket kabul edildi ve rezervasyon oluşturuldu. Rezervasyonlarım’da tüm detaylar var.
+                        </div>
                       </div>
 
-                      <div className="flex flex-col items-end gap-2">
-                        {best ? (
-                          <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-right">
-                            <p className="text-[0.65rem] text-slate-400">En iyi teklif (şu an)</p>
-                            <p className="text-[0.85rem] font-extrabold text-emerald-200">{money(best.totalPrice, best.currency)}</p>
-                            <p className="text-[0.7rem] text-slate-300">{best.agencyName || agenciesMap[best.agencyId]?.displayName || "Acenta"}</p>
-                          </div>
-                        ) : (
-                          <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[0.75rem] text-slate-300">
-                            Henüz teklif yok
-                          </div>
-                        )}
-
+                      <div className="flex gap-2">
                         <button
-                          type="button"
-                          onClick={() => openPackageModal(p)}
-                          className="rounded-md bg-sky-500 text-white px-4 py-2 text-[0.8rem] font-semibold hover:bg-sky-400"
+                          onClick={() => router.push("/guest/bookings")}
+                          className="rounded-md bg-emerald-500 text-slate-950 px-4 py-2 text-[0.8rem] font-semibold hover:bg-emerald-400"
                         >
-                          Detay / Teklifler
+                          Rezervasyonlara Git
                         </button>
-
-                    {st !== "accepted" && (
-  <div className="flex gap-2">
-    {st === "expired" && (
-      <button
-        onClick={() => restartPackageRequest(p)}
-        className="rounded-md border border-emerald-500/60 px-3 py-2 text-[0.75rem] text-emerald-200 hover:bg-emerald-500/10"
-      >
-        Yeniden başlat
-      </button>
-    )}
-
-    <button
-      onClick={() => editPackageRequest(p)}
-      className="rounded-md border border-sky-500/60 px-3 py-2 text-[0.75rem] text-sky-200 hover:bg-sky-500/10"
-    >
-      Düzenle
-    </button>
-
-    <button
-      onClick={() => deletePackageRequest(p)}
-      className="rounded-md border border-red-500/60 px-3 py-2 text-[0.75rem] text-red-200 hover:bg-red-500/10"
-    >
-      Sil
-    </button>
-  </div>
-)}
-
+                        <button
+                          onClick={() => openPackageModal(p)}
+                          className="rounded-md border border-slate-700 px-4 py-2 text-[0.8rem] text-slate-200 hover:border-slate-500"
+                        >
+                          Detay
+                        </button>
                       </div>
                     </div>
+                  ))}
+              </div>
+            )}
+            
 
-                    <div className="px-4 py-3 border-t border-slate-800 bg-slate-950/60 text-[0.75rem] text-slate-400">
-                      Para birimi: <b className="text-slate-200">{offersForReq[0]?.currency || "TRY"}</b> •
-                      Paket teklifleri “otel + transfer + tur + diğer” kırılımı ile gelir. Kabul ettiğinde ödeme adımı açılır.
-                    </div>
-                  </div>
-                );
-              })}
+            {pkgOpenList.length > 0 && (
+              <div className="space-y-2">
+                <h3 className="text-sm font-semibold text-slate-200">🧳 Paket taleplerin</h3>
+
+                {pkgOpenList
+                  .filter((p) => (cityFilter === "all" ? true : p.city === cityFilter))
+                  .filter((p) => {
+                    const q = qText.trim().toLowerCase();
+                    if (!q) return true;
+                    const hay = [p.id, p.title, p.city, p.district, p.note, (p.needs || []).join(" ")]
+                      .filter(Boolean)
+                      .join(" ")
+                      .toLowerCase();
+                    return hay.includes(q);
+                  })
+                  .map((p) => {
+                    const offersForReq = packageOffersByReq[p.id] ?? [];
+                    const best = guessBestPackageOffer(offersForReq);
+                    const pax = safeNum(p.paxAdults, 0) + safeNum(p.paxChildren, 0);
+                    const nights = p.nights ?? calcNightsFromISO(p.dateFrom, p.dateTo);
+
+                    const deadlineMin = safeNum(p.responseDeadlineMinutes, 180);
+                    const rem = formatRemainingPkg(p.createdAt, deadlineMin, now);
+                    const st: PackageRequestStatus =
+                      (p.status as any) === "accepted" ? "accepted" :
+                      (p.status as any) === "deleted" ? "deleted" :
+                      rem.expired ? "expired" : "open";
+
+                    const barColor =
+                      rem.color === "red" ? "bg-red-500" : rem.color === "yellow" ? "bg-amber-400" : "bg-emerald-500";
+
+                    return (
+                      <div key={p.id} className={`rounded-2xl border border-slate-800 bg-slate-950/80 shadow shadow-slate-950/40 overflow-hidden ${st === "expired" ? "opacity-80" : ""}`}>
+                        <div className="px-4 py-3 bg-slate-900/85 flex flex-wrap items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="inline-flex items-center rounded-full border border-indigo-500/30 bg-indigo-500/10 px-3 py-1 text-[0.7rem] text-indigo-200">
+                                🧳 Paket
+                              </span>
+                              <span className="text-[0.7rem] text-slate-500">#{p.id}</span>
+                              <span className={`inline-flex items-center rounded-full border px-3 py-1 text-[0.7rem] ${badgeByPkgStatus(st)}`}>
+                                {st === "open" ? "Açık" : st === "expired" ? "Süre doldu" : st === "accepted" ? "Kabul edildi" : "Silindi"}
+                              </span>
+                              <span className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[0.7rem] text-slate-200">
+                                Teklif: <b className="ml-1 text-white">{offersForReq.length}</b>
+                              </span>
+                            </div>
+
+                            <p className="text-slate-100 text-sm font-semibold">
+                              {p.title || "Paket talebi"} • {safeStr(p.city)}{p.district ? ` / ${p.district}` : ""}
+                            </p>
+
+                            <p className="text-[0.75rem] text-slate-300">
+                              {safeStr(p.dateFrom)} – {safeStr(p.dateTo)} • {nights} gece • {pax} kişi
+                              {p.roomsCount ? ` • ${p.roomsCount} oda` : ""}
+                            </p>
+
+                            <div className="mt-2 w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                              <div className={`h-full ${barColor}`} style={{ width: `${Math.round(rem.ratio * 100)}%` }} />
+                            </div>
+
+                            <p className={`text-[0.75rem] font-semibold ${rem.color === "red" ? "text-red-300" : rem.color === "yellow" ? "text-amber-200" : "text-emerald-200"}`}>
+                              {rem.text}
+                            </p>
+                          </div>
+
+                          <div className="flex flex-col items-end gap-2">
+                            {best ? (
+                              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-right">
+                                <p className="text-[0.65rem] text-slate-400">En iyi teklif (şu an)</p>
+                                <p className="text-[0.85rem] font-extrabold text-emerald-200">{money(best.totalPrice, best.currency)}</p>
+                                <p className="text-[0.7rem] text-slate-300">
+                                  {best.agencyName || agenciesMap[best.agencyId]?.displayName || "Acenta"}
+                                </p>
+                              </div>
+                            ) : (
+                              <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[0.75rem] text-slate-300">
+                                Henüz teklif yok
+                              </div>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => openPackageModal(p)}
+                              className="rounded-md bg-sky-500 text-white px-4 py-2 text-[0.8rem] font-semibold hover:bg-sky-400"
+                            >
+                              Detay / Teklifler
+                            </button>
+
+                            <div className="flex gap-2">
+                              {st === "expired" && (
+                                <button
+                                  onClick={() => restartPackageRequest(p)}
+                                  className="rounded-md border border-emerald-500/60 px-3 py-2 text-[0.75rem] text-emerald-200 hover:bg-emerald-500/10"
+                                >
+                                  Yeniden başlat
+                                </button>
+                              )}
+
+                              <button
+                                onClick={() => editPackageRequest(p)}
+                                className="rounded-md border border-sky-500/60 px-3 py-2 text-[0.75rem] text-sky-200 hover:bg-sky-500/10"
+                              >
+                                Düzenle
+                              </button>
+
+                              <button
+                                onClick={() => deletePackageRequest(p)}
+                                className="rounded-md border border-red-500/60 px-3 py-2 text-[0.75rem] text-red-200 hover:bg-red-500/10"
+                              >
+                                Sil
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="px-4 py-3 border-t border-slate-800 bg-slate-950/60 text-[0.75rem] text-slate-400">
+                          Paket teklifleri “otel + transfer + tur + diğer” kırılımı ile gelir. Kabul ettiğinde ödeme adımı açılır.
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
           </section>
         )}
 
         {/* ✅ HOTEL/GROUP REQUEST BLOCKS */}
-        {groupedByRequest.map((block) => {
-          const { request: req, offers: reqOffers, status, remaining, bestOfferId } = block;
-          const totalGuests = (req.adults ?? 0) + (req.childrenCount ?? 0);
-          const isGroup = req.isGroup || req.type === "group";
+        {(typeFilter === "all" || typeFilter === "hotel" || typeFilter === "group") && (
+          <section className="space-y-3">
+            {groupedByRequest.map((block) => {
+              const { request: req, offers: reqOffers, status, remaining, bestOfferId } = block;
+              const totalGuests = (req.adults ?? 0) + (req.childrenCount ?? 0);
+              const isGroup = req.isGroup || req.type === "group";
 
-          const statusBadge =
-            status === "expired"
-              ? { label: "Süresi doldu", className: "bg-red-500/10 text-red-300 border-red-500/40" }
-              : { label: "Açık", className: "bg-sky-500/10 text-sky-300 border-sky-500/40" };
+              const statusBadge =
+                status === "expired"
+                  ? { label: "Süresi doldu", className: "bg-red-500/10 text-red-300 border-red-500/40" }
+                  : { label: "Açık", className: "bg-sky-500/10 text-sky-300 border-sky-500/40" };
 
-          const remainingClass =
-            remaining.color === "red" ? "text-red-300" : remaining.color === "yellow" ? "text-amber-200" : "text-emerald-200";
+              const remainingClass =
+                remaining.color === "red" ? "text-red-300" : remaining.color === "yellow" ? "text-amber-200" : "text-emerald-200";
 
-          const barColor =
-            remaining.color === "red" ? "bg-red-500" : remaining.color === "yellow" ? "bg-amber-400" : "bg-emerald-500";
+              const barColor =
+                remaining.color === "red" ? "bg-red-500" : remaining.color === "yellow" ? "bg-amber-400" : "bg-emerald-500";
 
-          const roomTypesTextForReq =
-            req.roomTypes && req.roomTypes.length > 0 ? req.roomTypes.map(roomTypeLabel).join(", ") : "Fark etmez";
+              return (
+                <section key={req.id} className={`rounded-2xl border border-slate-800 bg-slate-950/80 shadow shadow-slate-950/40 overflow-hidden ${status === "expired" ? "opacity-70" : ""}`}>
+                  <div className="px-4 py-3 bg-slate-900/85">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-slate-100 text-sm font-semibold">
+                            {req.city}{req.district ? ` / ${req.district}` : ""} • {req.checkIn} – {req.checkOut}
+                          </p>
+                          {isGroup && (
+                            <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[0.65rem] text-amber-200">
+                              Grup talebi
+                            </span>
+                          )}
+                          <span className={`inline-flex items-center rounded-full border px-3 py-1 text-[0.7rem] ${statusBadge.className}`}>
+                            {statusBadge.label}
+                          </span>
+                        </div>
 
-          return (
-            <section key={req.id} className={`rounded-2xl border border-slate-800 bg-slate-950/80 shadow shadow-slate-950/40 overflow-hidden ${status === "expired" ? "opacity-70" : ""}`}>
-              <div className="px-4 py-3 bg-slate-900/85">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <p className="text-slate-100 text-sm font-semibold">
-                        {req.city}{req.district ? ` / ${req.district}` : ""} • {req.checkIn} – {req.checkOut}
-                      </p>
-                      {isGroup && (
-                        <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[0.65rem] text-amber-200">
-                          Grup talebi
-                        </span>
-                      )}
-                      <span className={`inline-flex items-center rounded-full border px-3 py-1 text-[0.7rem] ${statusBadge.className}`}>
-                        {statusBadge.label}
-                      </span>
-                    </div>
+                        <p className="text-[0.75rem] text-slate-300">
+                          {totalGuests} kişi • {req.roomsCount || 1} oda
+                        </p>
 
-                    <p className="text-[0.75rem] text-slate-300">
-                      {totalGuests} kişi • {req.roomsCount || 1} oda • <span className="text-slate-200">{roomTypesTextForReq}</span>
-                    </p>
-
-                    <div className="mt-2 w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                      <div className={`h-full ${barColor}`} style={{ width: `${Math.round(remaining.ratio * 100)}%` }} />
-                    </div>
-                  </div>
-
-                  <div className="text-right space-y-1">
-                    <p className={`text-[0.78rem] font-semibold ${remainingClass}`}>{remaining.text}</p>
-                    <p className="text-[0.7rem] text-slate-400">Talep ID: {req.id}</p>
-                  </div>
-                </div>
-              </div>
-
-              {status === "expired" ? (
-                <div className="px-4 py-4 border-t border-slate-800 bg-slate-950/60 text-[0.75rem] text-slate-300 space-y-2">
-                  <p>Bu talebin süresi doldu. Yeni teklif gelmez.</p>
-                  <div className="flex flex-wrap justify-end gap-2">
-                    <button onClick={() => handleRestartRequest(req)} className="rounded-md border border-emerald-500/70 px-3 py-2 text-[0.75rem] text-emerald-200 hover:bg-emerald-500/10">
-                      Yeniden başlat
-                    </button>
-                    <button onClick={() => handleEditRequest(req)} className="rounded-md border border-sky-500/70 px-3 py-2 text-[0.75rem] text-sky-200 hover:bg-sky-500/10">
-                      Düzenle
-                    </button>
-                    <button onClick={() => handleDeleteRequest(req)} className="rounded-md border border-red-500/70 px-3 py-2 text-[0.75rem] text-red-200 hover:bg-red-500/10">
-                      Sil
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="pt-2 pb-3">
-                  {reqOffers.length === 0 ? (
-                    <div className="px-4 py-4 text-[0.8rem] text-slate-400 border-t border-slate-800">
-                      Bu talebe henüz teklif gelmedi. Oteller teklif gönderdikçe burada göreceksin.
-                    </div>
-                  ) : (
-                    <>
-                      <div className="hidden md:grid grid-cols-[1.6fr_1.1fr_1.1fr_1.2fr_auto] bg-slate-900 text-[0.75rem] font-semibold text-slate-100 px-4 py-2">
-                        <div>Otel</div>
-                        <div>Toplam fiyat</div>
-                        <div>Teklif tipi</div>
-                        <div>Durum</div>
-                        <div className="text-right">İşlemler</div>
+                        <div className="mt-2 w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                          <div className={`h-full ${barColor}`} style={{ width: `${Math.round(remaining.ratio * 100)}%` }} />
+                        </div>
                       </div>
 
-                      {reqOffers.map((o) => {
-                        const createdStr = o.createdAt ? o.createdAt.toDate().toLocaleString("tr-TR") : "";
-                        const canCounterFlag = canCounter(o);
-                        const isSelected = selectedForPaymentId === o.id;
-                        const meta = getHistoryMeta(o);
-                        const isBest = bestOfferId === o.id;
+                      <div className="text-right space-y-1">
+                        <p className={`text-[0.78rem] font-semibold ${remainingClass}`}>{remaining.text}</p>
+                        <p className="text-[0.7rem] text-slate-400">Talep ID: {req.id}</p>
+                      </div>
+                    </div>
+                  </div>
 
-                        return (
-                          <div key={o.id} className={`border-t border-slate-800 ${isBest ? "bg-emerald-500/5" : ""}`}>
-                            <div className="grid md:grid-cols-[1.6fr_1.1fr_1.1fr_1.2fr_auto] gap-2 px-4 py-3 items-center">
-                              <div className="space-y-1 text-slate-100">
-                                <div className="md:hidden text-[0.7rem] text-slate-400">Otel</div>
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <div className="font-semibold text-sm">{o.hotelName || hotelsMap[o.hotelId]?.displayName || "Otel"}</div>
-                                  {isBest && (
-                                    <span className="inline-flex items-center rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[0.65rem] text-emerald-200">
-                                      ⚡ Kaçırılmayacak fırsat
+                  {status === "expired" ? (
+                    <div className="px-4 py-4 border-t border-slate-800 bg-slate-950/60 text-[0.75rem] text-slate-300 space-y-2">
+                      <p>Bu talebin süresi doldu. Yeni teklif gelmez.</p>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <button
+                          onClick={async () => {
+                            try {
+                              await updateDoc(doc(db, "requests", req.id), { createdAt: serverTimestamp(), status: "open" });
+                              setRequestsMap((prev) => {
+                                const copy = { ...prev };
+                                if (copy[req.id]) copy[req.id] = { ...copy[req.id], createdAt: Timestamp.fromDate(new Date()), status: "open" };
+                                return copy;
+                              });
+                              setActionMessage("Talebin yeniden başlatıldı. Oteller yeniden teklif verebilecek.");
+                            } catch {
+                              setActionError("Talep yeniden başlatılırken hata oluştu.");
+                            }
+                          }}
+                          className="rounded-md border border-emerald-500/70 px-3 py-2 text-[0.75rem] text-emerald-200 hover:bg-emerald-500/10"
+                        >
+                          Yeniden başlat
+                        </button>
+
+                        <button
+                          onClick={() => router.push(`/guest/requests/new?requestId=${req.id}`)}
+                          className="rounded-md border border-sky-500/70 px-3 py-2 text-[0.75rem] text-sky-200 hover:bg-sky-500/10"
+                        >
+                          Düzenle
+                        </button>
+
+                        <button
+                          onClick={async () => {
+                            const ok = window.confirm("Bu talebi silmek istediğine emin misin?");
+                            if (!ok) return;
+                            try {
+                              await updateDoc(doc(db, "requests", req.id), { status: "deleted", deletedAt: serverTimestamp() });
+                              setRequestsMap((prev) => {
+                                const copy = { ...prev };
+                                delete copy[req.id];
+                                return copy;
+                              });
+                              setActionMessage("Talebin silindi.");
+                            } catch {
+                              setActionError("Talep silinirken hata oluştu.");
+                            }
+                          }}
+                          className="rounded-md border border-red-500/70 px-3 py-2 text-[0.75rem] text-red-200 hover:bg-red-500/10"
+                        >
+                          Sil
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="pt-2 pb-3">
+                      {reqOffers.length === 0 ? (
+                        <div className="px-4 py-4 text-[0.8rem] text-slate-400 border-t border-slate-800">
+                          Bu talebe henüz teklif gelmedi. Oteller teklif gönderdikçe burada göreceksin.
+                        </div>
+                      ) : (
+                        <>
+                          <div className="hidden md:grid grid-cols-[1.6fr_1.1fr_1.1fr_1.2fr_auto] bg-slate-900 text-[0.75rem] font-semibold text-slate-100 px-4 py-2">
+                            <div>Otel</div>
+                            <div>Toplam fiyat</div>
+                            <div>Teklif tipi</div>
+                            <div>Durum</div>
+                            <div className="text-right">İşlemler</div>
+                          </div>
+
+                          {reqOffers.map((o) => {
+                            const createdStr = o.createdAt ? o.createdAt.toDate().toLocaleString("tr-TR") : "";
+                            const canCounterFlag = canCounter(o);
+                            const isSelected = selectedForPaymentId === o.id;
+                            const meta = getHistoryMeta(o);
+                            const isBest = bestOfferId === o.id;
+
+                            return (
+                              <div key={o.id} className={`border-t border-slate-800 ${isBest ? "bg-emerald-500/5" : ""}`}>
+                                <div className="grid md:grid-cols-[1.6fr_1.1fr_1.1fr_1.2fr_auto] gap-2 px-4 py-3 items-center">
+                                  <div className="space-y-1 text-slate-100">
+                                    <div className="md:hidden text-[0.7rem] text-slate-400">Otel</div>
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <div className="font-semibold text-sm">{o.hotelName || hotelsMap[o.hotelId]?.displayName || "Otel"}</div>
+                                      {isBest && (
+                                        <span className="inline-flex items-center rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[0.65rem] text-emerald-200">
+                                          ⚡ En iyi
+                                        </span>
+                                      )}
+                                      {o.mode === "negotiable" && (
+                                        <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[0.65rem] text-amber-200">
+                                          💬 Pazarlıklı
+                                        </span>
+                                      )}
+                                      {meta.hasHotelUpdate && (
+                                        <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
+                                          📉 Güncellendi
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="text-slate-100">
+                                    <div className="md:hidden text-[0.7rem] text-slate-400">Toplam fiyat</div>
+                                    {meta.firstPrice && meta.firstPrice !== o.totalPrice ? (
+                                      <div className="text-[0.75rem] text-slate-400 line-through">{money(meta.firstPrice, o.currency)}</div>
+                                    ) : null}
+                                    <div className="font-extrabold text-sm text-emerald-300">{money(o.totalPrice, o.currency)}</div>
+                                    <div className="text-[0.7rem] text-slate-400">{createdStr ? `Teklif tarihi: ${createdStr}` : ""}</div>
+                                  </div>
+
+                                  <div className="text-slate-100">
+                                    <div className="md:hidden text-[0.7rem] text-slate-400">Teklif tipi</div>
+                                    <div className="font-semibold">{MODE_LABEL_PUBLIC[o.mode]}</div>
+                                    {o.mode === "negotiable" && (
+                                      <p className="text-[0.65rem] text-amber-300">1 defa karşı teklif hakkın var.</p>
+                                    )}
+                                  </div>
+
+                                  <div className="space-y-1">
+                                    <div className="md:hidden text-[0.7rem] text-slate-400">Durum</div>
+                                    <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[0.7rem] ${
+                                      o.status === "rejected" ? "bg-red-500/10 text-red-300 border-red-500/40" :
+                                      o.status === "countered" ? "bg-amber-500/10 text-amber-300 border-amber-500/40" :
+                                      "bg-slate-500/10 text-slate-300 border-slate-500/40"
+                                    }`}>
+                                      {o.status === "countered" ? "Karşı teklif gönderdin" : o.status === "rejected" ? "Reddettin" : "Otel teklif gönderdi"}
                                     </span>
-                                  )}
-                                  {o.mode === "negotiable" && (
-                                    <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[0.65rem] text-amber-200">
-                                      💬 Pazarlıklı
-                                    </span>
-                                  )}
-                                  {meta.hasHotelUpdate && (
-                                    <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
-                                      📉 Fiyat güncellendi
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
 
-                              <div className="text-slate-100">
-                                <div className="md:hidden text-[0.7rem] text-slate-400">Toplam fiyat</div>
-                                {meta.firstPrice && meta.firstPrice !== o.totalPrice ? (
-                                  <div className="text-[0.75rem] text-slate-400 line-through">{money(meta.firstPrice, o.currency)}</div>
-                                ) : null}
-                                <div className="font-extrabold text-sm text-emerald-300">{money(o.totalPrice, o.currency)}</div>
-                                <div className="text-[0.7rem] text-slate-400">{createdStr ? `Teklif tarihi: ${createdStr}` : ""}</div>
-                              </div>
+                                    {o.guestCounterPrice ? (
+                                      <p className="text-[0.7rem] text-slate-400">Karşı teklifin: {money(o.guestCounterPrice, o.currency)}</p>
+                                    ) : null}
+                                  </div>
 
-                              <div className="text-slate-100">
-                                <div className="md:hidden text-[0.7rem] text-slate-400">Teklif tipi</div>
-                                <div className="font-semibold">{MODE_LABEL_PUBLIC[o.mode]}</div>
-                                {o.mode === "negotiable" && (
-                                  <p className="text-[0.65rem] text-amber-300">1 defa karşı teklif hakkın var.</p>
-                                )}
-                              </div>
-
-                              <div className="space-y-1">
-                                <div className="md:hidden text-[0.7rem] text-slate-400">Durum</div>
-                                <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[0.7rem] ${
-                                  o.status === "rejected" ? "bg-red-500/10 text-red-300 border-red-500/40" :
-                                  o.status === "countered" ? "bg-amber-500/10 text-amber-300 border-amber-500/40" :
-                                  "bg-slate-500/10 text-slate-300 border-slate-500/40"
-                                }`}>
-                                  {o.status === "countered" ? "Karşı teklif gönderdin" : o.status === "rejected" ? "Reddettin" : "Otel teklif gönderdi"}
-                                </span>
-
-                                {o.guestCounterPrice ? (
-                                  <p className="text-[0.7rem] text-slate-400">Karşı teklifin: {money(o.guestCounterPrice, o.currency)}</p>
-                                ) : null}
-                              </div>
-
-                              <div className="flex justify-end gap-2 flex-wrap">
-                                {(o.status === "sent" || o.status === "countered") && (
-                                  <>
-                                    {isSelected ? (
+                                  <div className="flex justify-end gap-2 flex-wrap">
+                                    {(o.status === "sent" || o.status === "countered") && (
                                       <>
-                                        <button onClick={() => handleOpenPaymentModal(o)} disabled={savingAction} className="rounded-md bg-emerald-500 text-slate-950 px-3 py-2 text-[0.75rem] font-semibold hover:bg-emerald-400 disabled:opacity-60">
-                                          Ödemeye ilerle
-                                        </button>
-                                        <button onClick={handleCancelSelection} disabled={savingAction} className="rounded-md border border-slate-700 px-3 py-2 text-[0.75rem] text-slate-200 hover:border-slate-500">
-                                          Vazgeç
+                                        {isSelected ? (
+                                          <>
+                                            <button
+                                              onClick={() => handleOpenPaymentModal(o)}
+                                              disabled={savingAction}
+                                              className="rounded-md bg-emerald-500 text-slate-950 px-3 py-2 text-[0.75rem] font-semibold hover:bg-emerald-400 disabled:opacity-60"
+                                            >
+                                              Ödemeye ilerle
+                                            </button>
+                                            <button
+                                              onClick={handleCancelSelection}
+                                              disabled={savingAction}
+                                              className="rounded-md border border-slate-700 px-3 py-2 text-[0.75rem] text-slate-200 hover:border-slate-500"
+                                            >
+                                              Vazgeç
+                                            </button>
+                                          </>
+                                        ) : (
+                                          <button
+                                            onClick={() => handleSelectForPayment(o)}
+                                            disabled={savingAction}
+                                            className="rounded-md border border-emerald-500/70 px-3 py-2 text-[0.75rem] text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-60"
+                                          >
+                                            Kabul et
+                                          </button>
+                                        )}
+
+                                        <button
+                                          onClick={() => handleReject(o)}
+                                          disabled={savingAction}
+                                          className="rounded-md border border-red-500/70 px-3 py-2 text-[0.75rem] text-red-300 hover:bg-red-500/10 disabled:opacity-60"
+                                        >
+                                          Reddet
                                         </button>
                                       </>
-                                    ) : (
-                                      <button onClick={() => handleSelectForPayment(o)} disabled={savingAction} className="rounded-md border border-emerald-500/70 px-3 py-2 text-[0.75rem] text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-60">
-                                        Kabul et
+                                    )}
+
+                                    {canCounterFlag && o.status === "sent" && (
+                                      <button
+                                        onClick={() => startCounter(o)}
+                                        disabled={savingAction || !!o.guestCounterPrice}
+                                        className="rounded-md border border-amber-500/70 px-3 py-2 text-[0.75rem] text-amber-300 hover:bg-amber-500/10 disabled:opacity-60"
+                                      >
+                                        Pazarlık yap
                                       </button>
                                     )}
 
-                                    <button onClick={() => handleReject(o)} disabled={savingAction} className="rounded-md border border-red-500/70 px-3 py-2 text-[0.75rem] text-red-300 hover:bg-red-500/10 disabled:opacity-60">
-                                      Reddet
-                                    </button>
-                                  </>
-                                )}
-
-                                {canCounterFlag && o.status === "sent" && (
-                                  <button onClick={() => startCounter(o)} disabled={savingAction || !!o.guestCounterPrice} className="rounded-md border border-amber-500/70 px-3 py-2 text-[0.75rem] text-amber-300 hover:bg-amber-500/10 disabled:opacity-60">
-                                    Pazarlık yap
-                                  </button>
-                                )}
-
-                                <button onClick={() => openDetails(o)} className="rounded-md bg-sky-500 text-white px-3 py-2 text-[0.75rem] font-semibold hover:bg-sky-400">
-                                  Detay
-                                </button>
-                              </div>
-                            </div>
-
-                            {counterEditId === o.id && canCounterFlag && (
-                              <div className="bg-slate-950 px-4 pb-4 text-[0.7rem]">
-                                <form onSubmit={(e) => handleCounterSubmit(e, o)} className="mt-1 space-y-2 rounded-xl border border-slate-800 bg-slate-950/90 p-3">
-                                  <p className="text-slate-200 font-semibold mb-1">Pazarlık – karşı teklifini yaz</p>
-                                  <div className="space-y-1">
-                                    <label className="text-slate-400">Önerdiğin toplam fiyat ({o.currency})</label>
-                                    <input type="number" min={0} step="0.01" value={counterPrice} onChange={(e) => setCounterPrice(e.target.value)} className="input" />
-                                    <p className="text-[0.65rem] text-slate-500">Bu hakkı sadece 1 defa kullanabilirsin.</p>
-                                  </div>
-                                  <div className="flex justify-end gap-2 mt-1">
-                                    <button type="button" onClick={cancelCounter} className="rounded-md border border-slate-700 px-3 py-2 text-[0.75rem] text-slate-200 hover:border-slate-500">
-                                      İptal
-                                    </button>
-                                    <button type="submit" disabled={savingAction} className="rounded-md bg-amber-500 text-slate-950 px-3 py-2 text-[0.75rem] font-semibold hover:bg-amber-400 disabled:opacity-60">
-                                      Karşı teklif gönder
+                                    <button
+                                      onClick={() => openDetails(o)}
+                                      className="rounded-md bg-sky-500 text-white px-3 py-2 text-[0.75rem] font-semibold hover:bg-sky-400"
+                                    >
+                                      Detay
                                     </button>
                                   </div>
-                                </form>
+                                </div>
+
+                                {counterEditId === o.id && canCounterFlag && (
+                                  <div className="bg-slate-950 px-4 pb-4 text-[0.7rem]">
+                                    <form onSubmit={(e) => handleCounterSubmit(e, o)} className="mt-1 space-y-2 rounded-xl border border-slate-800 bg-slate-950/90 p-3">
+                                      <p className="text-slate-200 font-semibold mb-1">Pazarlık – karşı teklifini yaz</p>
+                                      <div className="space-y-1">
+                                        <label className="text-slate-400">Önerdiğin toplam fiyat ({o.currency})</label>
+                                        <input type="number" min={0} step="0.01" value={counterPrice} onChange={(e) => setCounterPrice(e.target.value)} className="input" />
+                                        <p className="text-[0.65rem] text-slate-500">Bu hakkı sadece 1 defa kullanabilirsin.</p>
+                                      </div>
+                                      <div className="flex justify-end gap-2 mt-1">
+                                        <button type="button" onClick={cancelCounter} className="rounded-md border border-slate-700 px-3 py-2 text-[0.75rem] text-slate-200 hover:border-slate-500">
+                                          İptal
+                                        </button>
+                                        <button type="submit" disabled={savingAction} className="rounded-md bg-amber-500 text-slate-950 px-3 py-2 text-[0.75rem] font-semibold hover:bg-amber-400 disabled:opacity-60">
+                                          Karşı teklif gönder
+                                        </button>
+                                      </div>
+                                    </form>
+                                  </div>
+                                )}
                               </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </>
+                            );
+                          })}
+                        </>
+                      )}
+                    </div>
                   )}
-                </div>
-              )}
-            </section>
-          );
-        })}
+                </section>
+              );
+            })}
+          </section>
+        )}
 
         {/* HOTEL OFFER DETAIL MODAL */}
         {detailsOpen && detailsOffer && (
-          <OfferDetailModal offer={detailsOffer} hotel={hotelsMap[detailsOffer.hotelId]} req={requestsMap[detailsOffer.requestId]} onClose={closeDetails} />
+          <OfferDetailModal
+            offer={detailsOffer}
+            hotel={hotelsMap[detailsOffer.hotelId]}
+            req={requestsMap[detailsOffer.requestId]}
+            onClose={closeDetails}
+          />
         )}
 
         {/* HOTEL PAYMENT MODAL */}
         {paymentOpen && paymentOffer && (
           <PaymentModal
             offer={paymentOffer}
-            req={requestsMap[paymentOffer.requestId]}
             hotel={hotelsMap[paymentOffer.hotelId]}
             paymentMethod={paymentMethod}
             setPaymentMethod={setPaymentMethod}
@@ -1901,7 +2013,6 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
             setThreeDSOpen={setPkgThreeDSOpen}
             onClose={closePkgPayment}
             onConfirm={() => {
-              // 3D seçiliyse önce simülasyon aç
               if (pkgPayMethod === "card3d") {
                 setPkgThreeDSOpen(true);
                 return;
@@ -1931,6 +2042,16 @@ const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
     </Protected>
   );
 }
+function MiniStat({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+      <p className="text-[0.7rem] text-slate-400">{title}</p>
+      <p className="text-slate-100 font-extrabold mt-1">{value}</p>
+    </div>
+  );
+}
+
+/* -------------------- HOTEL OFFER DETAIL MODAL -------------------- */
 function OfferDetailModal({
   offer,
   hotel,
@@ -1946,7 +2067,7 @@ function OfferDetailModal({
   const hotelImages = (hp?.imageUrls ?? []).filter(Boolean);
   const [activeHotelImage, setActiveHotelImage] = useState(0);
 
-  // ✅ Lightbox (otel görsel büyütme)
+  // Lightbox
   const [imgOpen, setImgOpen] = useState(false);
   const [imgSrc, setImgSrc] = useState<string | null>(null);
   const openImage = (src?: string | null) => {
@@ -1990,17 +2111,9 @@ function OfferDetailModal({
     return diff > 0 ? diff : 1;
   })();
 
-  // ✅ Talep verisi (RequestSummary içinde hangi alanlar varsa onları gösteririz)
   const reqAny: any = req || {};
   const reqChildrenAges: number[] = Array.isArray(reqAny.childrenAges) ? reqAny.childrenAges : [];
-  const reqBoardType = reqAny.boardType || reqAny.boardtype || null; // sende "BB" var
-  const reqDesiredStars = Array.isArray(reqAny.desiredStarRatings) ? reqAny.desiredStarRatings : (reqAny.starRating ? [reqAny.starRating] : []);
-  const reqFeatureKeys = Array.isArray(reqAny.featureKeys) ? reqAny.featureKeys : [];
-  const reqHotelFeaturePrefs = Array.isArray(reqAny.hotelFeaturePrefs) ? reqAny.hotelFeaturePrefs : [];
-  const reqHotelFeatureNote = reqAny.hotelFeatureNote || null;
-  const reqResponseTimeUnit = reqAny.responseTimeUnit || null;
 
-  // ✅ Fiyat geçmişi
   const hist = Array.isArray(offer.priceHistory) ? offer.priceHistory : [];
   const histSorted = hist
     .slice()
@@ -2016,14 +2129,11 @@ function OfferDetailModal({
   const bargained = (() => {
     if (!pricesHotel.length) return false;
     if (pricesHotel.length >= 2) return true;
-    // tek hotel fiyatı bile varsa ama guest counter varsa pazarlık var say
     return histSorted.some((h: any) => h?.actor === "guest");
   })();
 
   const dropAmount = (minHotel != null && firstHotel > 0) ? (firstHotel - minHotel) : 0;
   const dropPct = (minHotel != null && firstHotel > 0) ? Math.round((dropAmount / firstHotel) * 100) : 0;
-
-  const cancelTone = cancelText ? "border-slate-800 bg-slate-950/90" : "border-slate-800 bg-slate-950/90";
 
   return (
     <>
@@ -2031,7 +2141,6 @@ function OfferDetailModal({
         <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
 
         <div className="relative mt-10 w-full max-w-5xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-xl shadow-slate-950/60 max-h-[88vh] overflow-y-auto text-[0.85rem] space-y-4">
-          {/* Header */}
           <div className="flex items-start justify-between gap-3">
             <div className="space-y-1">
               <h2 className="text-base font-semibold text-slate-100">Otel Detayı</h2>
@@ -2039,7 +2148,6 @@ function OfferDetailModal({
                 Teklif #{offer.id} • {offer.hotelName || hotel?.displayName || "Otel"}
               </p>
 
-              {/* ✅ Pazarlık özeti hızlı rozetler */}
               <div className="flex flex-wrap gap-2 pt-1">
                 <span className="inline-flex items-center rounded-md border border-slate-700 bg-slate-950/60 px-2 py-1 text-[0.72rem] text-slate-200">
                   Başlangıç: <b className="ml-1 text-slate-100">{money(firstHotel, offer.currency)}</b>
@@ -2062,16 +2170,11 @@ function OfferDetailModal({
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-md border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:border-emerald-400"
-            >
+            <button type="button" onClick={onClose} className="rounded-md border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:border-emerald-400">
               Kapat ✕
             </button>
           </div>
 
-          {/* Top area: gallery + hotel highlights */}
           <div className="grid md:grid-cols-[1.4fr_minmax(0,1.6fr)] gap-4">
             {/* Gallery */}
             <div className="rounded-2xl border border-slate-800 bg-slate-900/60 overflow-hidden flex flex-col">
@@ -2083,11 +2186,7 @@ function OfferDetailModal({
                     onClick={() => openImage(hotelImages[activeHotelImage])}
                     title="Büyütmek için tıkla"
                   >
-                    <img
-                      src={hotelImages[activeHotelImage]}
-                      alt={hotel?.displayName || "Otel görseli"}
-                      className="w-full h-full object-cover"
-                    />
+                    <img src={hotelImages[activeHotelImage]} alt="otel görseli" className="w-full h-full object-cover" />
                     <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition" />
                     <div className="absolute bottom-3 right-3 rounded-md border border-white/25 bg-black/40 px-2 py-1 text-[0.72rem] text-white">
                       🔍 Büyüt
@@ -2102,9 +2201,8 @@ function OfferDetailModal({
                           type="button"
                           onClick={() => setActiveHotelImage(idx)}
                           className={`w-16 h-16 rounded-lg border overflow-hidden ${activeHotelImage === idx ? "border-emerald-400" : "border-slate-700"}`}
-                          title="Seç"
                         >
-                          <img src={img} alt={`Otel görsel ${idx + 1}`} className="w-full h-full object-cover" />
+                          <img src={img} alt={`thumb-${idx}`} className="w-full h-full object-cover" />
                         </button>
                       ))}
                     </div>
@@ -2118,28 +2216,16 @@ function OfferDetailModal({
               )}
             </div>
 
-            {/* Hotel showcase (NO website, NO contact focus) */}
+            {/* Details */}
             <div className="space-y-3">
               <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <h2 className="text-base font-semibold text-slate-100">
-                      {hotel?.displayName || offer.hotelName || "Otel"}
-                    </h2>
-                    {hp?.starRating ? (
-                      <p className="text-[0.8rem] text-amber-300 mt-1">{hp.starRating}★</p>
-                    ) : (
-                      <p className="text-[0.75rem] text-slate-500 mt-1">★ Puan bilgisi yok</p>
-                    )}
+                    <h2 className="text-base font-semibold text-slate-100">{hotel?.displayName || offer.hotelName || "Otel"}</h2>
+                    {hp?.starRating ? <p className="text-[0.8rem] text-amber-300 mt-1">{hp.starRating}★</p> : null}
                   </div>
-
                   {mapUrl ? (
-                    <a
-                      href={mapUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="rounded-md border border-slate-700 px-3 py-2 text-[0.75rem] text-sky-200 hover:border-sky-400"
-                    >
+                    <a href={mapUrl} target="_blank" rel="noreferrer" className="rounded-md border border-slate-700 px-3 py-2 text-[0.75rem] text-sky-200 hover:border-sky-400">
                       Haritada gör
                     </a>
                   ) : null}
@@ -2147,28 +2233,19 @@ function OfferDetailModal({
 
                 {hp?.address ? (
                   <p className="text-[0.8rem] text-slate-300 mt-3">
-                    <span className="text-slate-400">Adres: </span>
-                    {hp.address}
+                    <span className="text-slate-400">Adres: </span>{hp.address}
                   </p>
                 ) : null}
 
-                {/* ✅ Website kaldırıldı */}
-
-                {/* ✅ Otel hakkında daha “şov” */}
                 {hp?.description ? (
                   <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                     <p className="text-[0.75rem] text-slate-400 mb-1">Otel hakkında</p>
                     <p className="text-[0.82rem] text-slate-200 leading-relaxed">{hp.description}</p>
                   </div>
-                ) : (
-                  <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-slate-400 text-[0.8rem]">
-                    Otel açıklaması eklenmemiş.
-                  </div>
-                )}
+                ) : null}
 
-                {/* İptal + ödeme metni (kısa, karar için gerekli) */}
                 <div className="grid md:grid-cols-2 gap-2 mt-3">
-                  <div className={`rounded-xl border ${cancelTone} p-3`}>
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/90 p-3">
                     <p className="text-[0.75rem] text-slate-400 mb-1">İptal</p>
                     <p className="text-[0.8rem] text-slate-200">{cancelText || "Bilgi yok"}</p>
                   </div>
@@ -2179,10 +2256,8 @@ function OfferDetailModal({
                 </div>
               </div>
 
-              {/* ✅ Misafirin kendi talebi (tam görsün) */}
               <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
-                <p className="text-[0.8rem] font-semibold text-slate-100 mb-2">Senin otel talebin</p>
-
+                <p className="text-[0.8rem] font-semibold text-slate-100 mb-2">Senin talebin</p>
                 <div className="grid md:grid-cols-2 gap-2 text-[0.8rem]">
                   <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                     <p className="text-[0.72rem] text-slate-400">Tarih</p>
@@ -2198,64 +2273,18 @@ function OfferDetailModal({
                       <p className="text-[0.75rem] text-slate-300 mt-1">Çocuk yaşları: {reqChildrenAges.join(", ")}</p>
                     ) : null}
                   </div>
-
-                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                    <p className="text-[0.72rem] text-slate-400">Pansiyon</p>
-                    <p className="text-slate-100 font-semibold">{reqBoardType || "—"}</p>
-                  </div>
-
-                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                    <p className="text-[0.72rem] text-slate-400">İstenen yıldız</p>
-                    <p className="text-slate-100 font-semibold">
-                      {reqDesiredStars.length ? reqDesiredStars.join(", ") + "★" : "—"}
-                    </p>
-                  </div>
                 </div>
-
-                {(reqHotelFeaturePrefs.length || reqFeatureKeys.length || reqHotelFeatureNote) ? (
-                  <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                    <p className="text-[0.72rem] text-slate-400 mb-1">İstekler / Tercihler</p>
-
-                    {reqHotelFeaturePrefs.length ? (
-                      <p className="text-[0.78rem] text-slate-200">
-                        Otel tercihleri: <span className="text-slate-300">{reqHotelFeaturePrefs.join(", ")}</span>
-                      </p>
-                    ) : null}
-
-                    {reqFeatureKeys.length ? (
-                      <p className="text-[0.78rem] text-slate-200 mt-1">
-                        Özellik anahtarları: <span className="text-slate-300">{reqFeatureKeys.join(", ")}</span>
-                      </p>
-                    ) : null}
-
-                    {reqHotelFeatureNote ? (
-                      <p className="text-[0.78rem] text-slate-200 mt-1">
-                        Not: <span className="text-slate-300">{reqHotelFeatureNote}</span>
-                      </p>
-                    ) : null}
-
-                    {reqResponseTimeUnit ? (
-                      <p className="text-[0.75rem] text-slate-500 mt-2">
-                        Teklif cevap süresi birimi: {reqResponseTimeUnit}
-                      </p>
-                    ) : null}
-                  </div>
-                ) : null}
               </div>
             </div>
           </div>
 
-          {/* ✅ Fiyat & oda kırılımı */}
+          {/* breakdown */}
           <div className="space-y-2 rounded-2xl border border-slate-800 bg-slate-950/90 p-4">
             <p className="text-slate-400 text-[0.75rem] mb-0.5">Fiyat & oda kırılımı</p>
             <p className="text-slate-100">
               <span className="text-lg font-extrabold text-emerald-300">{money(offer.totalPrice, offer.currency)}</span>{" "}
               <span className="text-[0.8rem] text-slate-300">• {MODE_LABEL_PUBLIC[offer.mode]}</span>
             </p>
-
-            {offer.note ? (
-              <p className="text-[0.78rem] text-slate-300"><span className="text-slate-400">Otel notu: </span>{offer.note}</p>
-            ) : null}
 
             {breakdown.length > 0 ? (
               <div className="mt-2 space-y-2">
@@ -2280,7 +2309,6 @@ function OfferDetailModal({
                                 type="button"
                                 onClick={() => { setRoomModalRoom(rtProfile); setRoomModalOpen(true); }}
                                 className="underline underline-offset-2 hover:text-emerald-300"
-                                title="Oda detayını gör"
                               >
                                 {label}
                               </button>
@@ -2288,7 +2316,6 @@ function OfferDetailModal({
                               <span className="font-extrabold">{label}</span>
                             )}
                           </p>
-
                           <p className="text-[0.78rem] text-slate-300 mt-1">
                             {n} gece × {nightly.toLocaleString("tr-TR")} {offer.currency}
                           </p>
@@ -2308,14 +2335,11 @@ function OfferDetailModal({
             )}
           </div>
 
-          {/* ✅ Fiyat geçmişi (pazarlık detay) */}
           {histSorted.length > 0 ? (
             <div className="space-y-2 rounded-2xl border border-slate-800 bg-slate-950/90 p-4">
               <div className="flex items-center justify-between gap-2">
-                <p className="text-slate-100 font-semibold text-[0.9rem]">Fiyat geçmişi / Pazarlık</p>
-                <p className="text-[0.75rem] text-slate-400">
-                  Adım: <span className="text-slate-200 font-semibold">{histSorted.length}</span>
-                </p>
+                <p className="text-slate-100 font-semibold text-[0.9rem]">Fiyat geçmişi</p>
+                <p className="text-[0.75rem] text-slate-400">Adım: <span className="text-slate-200 font-semibold">{histSorted.length}</span></p>
               </div>
 
               <div className="grid md:grid-cols-3 gap-2">
@@ -2333,9 +2357,7 @@ function OfferDetailModal({
                   return (
                     <div key={i} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                       <div className="flex items-center justify-between gap-2">
-                        <div className="text-slate-100 font-semibold">
-                          {who} • <span className="text-slate-300">{kind}</span>
-                        </div>
+                        <div className="text-slate-100 font-semibold">{who} • <span className="text-slate-300">{kind}</span></div>
                         <div className="text-emerald-300 font-extrabold">{money(h.price, offer.currency)}</div>
                       </div>
                       <div className="text-[0.7rem] text-slate-500 mt-1">{t}</div>
@@ -2345,14 +2367,9 @@ function OfferDetailModal({
                 })}
               </div>
             </div>
-          ) : (
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 text-slate-400 text-[0.85rem]">
-              Fiyat geçmişi yok. Bu teklif tek fiyatla verilmiş.
-            </div>
-          )}
+          ) : null}
 
-          {/* Video (opsiyonel) */}
-          {hp?.youtubeUrl ? (
+        {hp?.youtubeUrl ? (
             <div className="space-y-2 rounded-2xl border border-slate-800 bg-slate-950/90 p-4">
               <p className="text-slate-100 font-semibold text-[0.9rem]">Otel tanıtım videosu</p>
               <div className="aspect-video rounded-xl overflow-hidden border border-slate-800">
@@ -2369,16 +2386,11 @@ function OfferDetailModal({
         </div>
       </div>
 
-      {/* ✅ Lightbox */}
       {imgOpen && imgSrc ? (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80">
           <button className="absolute inset-0" onClick={closeImage} aria-label="Kapat" />
           <div className="relative max-w-5xl w-[92vw]">
-            <button
-              type="button"
-              onClick={closeImage}
-              className="absolute -top-10 right-0 rounded-md border border-white/20 bg-black/40 px-3 py-2 text-sm text-white hover:bg-black/60"
-            >
+            <button type="button" onClick={closeImage} className="absolute -top-10 right-0 rounded-md border border-white/20 bg-black/40 px-3 py-2 text-sm text-white hover:bg-black/60">
               Kapat ✕
             </button>
             <img src={imgSrc} alt="Büyük görsel" className="w-full max-h-[78vh] object-contain rounded-xl border border-white/10" />
@@ -2386,7 +2398,6 @@ function OfferDetailModal({
         </div>
       ) : null}
 
-      {/* Room modal */}
       {roomModalOpen && roomModalRoom ? (
         <RoomTypeModal
           room={roomModalRoom}
@@ -2397,17 +2408,78 @@ function OfferDetailModal({
   );
 }
 
-function MiniStat({ title, value }: { title: string; value: string }) {
+function RoomTypeModal({ room, onClose }: { room: RoomTypeProfile; onClose: () => void }) {
+  const images = ((room.imageUrls ?? room.images ?? room.gallery ?? room.photos ?? []) as string[]).filter(Boolean);
+  const [active, setActive] = useState(0);
+
+  const [imgOpen, setImgOpen] = useState(false);
+  const [imgSrc, setImgSrc] = useState<string | null>(null);
+
+  const openImage = (src?: string | null) => { if (!src) return; setImgSrc(src); setImgOpen(true); };
+  const closeImage = () => { setImgOpen(false); setImgSrc(null); };
+
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-      <p className="text-[0.7rem] text-slate-400">{title}</p>
-      <p className="text-slate-100 font-extrabold mt-1">{value}</p>
-    </div>
+    <>
+      <div className="fixed inset-0 z-[70] flex items-start justify-center bg-black/70">
+        <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
+        <div className="relative mt-14 w-full max-w-3xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-xl shadow-slate-950/60 max-h-[85vh] overflow-y-auto space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-base font-extrabold text-slate-100">{room?.name || "Oda tipi"}</h3>
+              {room?.shortDescription ? <p className="text-[0.8rem] text-slate-300 mt-1">{room.shortDescription}</p> : null}
+            </div>
+            <button type="button" onClick={onClose} className="rounded-md border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:border-emerald-400">
+              Kapat ✕
+            </button>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/60 overflow-hidden">
+            {images.length ? (
+              <>
+                <button type="button" className="w-full h-64 relative group" onClick={() => openImage(images[active])} title="Büyütmek için tıkla">
+                  <img src={images[active]} alt="oda görseli" className="w-full h-full object-cover" />
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition" />
+                  <div className="absolute bottom-3 right-3 rounded-md border border-white/25 bg-black/40 px-2 py-1 text-[0.72rem] text-white">🔍 Büyüt</div>
+                </button>
+
+                {images.length > 1 ? (
+                  <div className="flex gap-2 p-2 bg-slate-950/80 border-t border-slate-800 overflow-x-auto">
+                    {images.slice(0, 14).map((img: string, idx: number) => (
+                      <button key={idx} type="button" onClick={() => setActive(idx)} className={`w-16 h-16 rounded-lg border overflow-hidden ${active === idx ? "border-emerald-400" : "border-slate-700"}`}>
+                        <img src={img} alt={`thumb-${idx}`} className="w-full h-full object-cover" />
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <div className="h-64 flex items-center justify-center text-slate-500 text-sm">Bu oda tipi için görsel yok.</div>
+            )}
+          </div>
+
+          {room?.description ? (
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+              <p className="text-[0.75rem] text-slate-400 mb-1">Açıklama</p>
+              <p className="text-slate-100 text-sm whitespace-pre-wrap">{room.description}</p>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {imgOpen && imgSrc ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80">
+          <button className="absolute inset-0" onClick={closeImage} aria-label="Kapat" />
+          <div className="relative max-w-5xl w-[92vw]">
+            <button type="button" onClick={closeImage} className="absolute -top-10 right-0 rounded-md border border-white/20 bg-black/40 px-3 py-2 text-sm text-white hover:bg-black/60">
+              Kapat ✕
+            </button>
+            <img src={imgSrc} alt="Büyük oda görseli" className="w-full max-h-[78vh] object-contain rounded-xl border border-white/10" />
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
-
-
-/* -------------------- PAYMENT MODAL (HOTEL) -------------------- */
 function PaymentModal({
   offer,
   hotel,
@@ -2431,7 +2503,6 @@ function PaymentModal({
   setCardCvc
 }: {
   offer: GuestOffer;
-  req?: RequestSummary;
   hotel?: HotelInfo;
   paymentMethod: PaymentMethod | null;
   setPaymentMethod: (m: PaymentMethod | null) => void;
@@ -2461,15 +2532,6 @@ function PaymentModal({
   const hasCard3d = availableMethods.includes("card3d");
   const hasPayAtHotel = availableMethods.includes("payAtHotel");
 
-  const descriptionText =
-    hasCard3d && hasPayAtHotel
-      ? "3D Secure kart ödemesi veya otelde ödeme seçeneklerinden birini seçebilirsin."
-      : hasCard3d
-      ? "Bu otelde 3D Secure ile kart ödemesi yapabilirsin."
-      : hasPayAtHotel
-      ? "Bu otelde ödemeyi girişte, otelde yapabilirsin."
-      : "Bu otel için şu an tanımlı bir ödeme yöntemi bulunmuyor.";
-
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/70">
@@ -2483,26 +2545,26 @@ function PaymentModal({
           </div>
 
           <p className="text-[0.75rem] text-slate-300">
-            Toplam <span className="font-semibold">{money(offer.totalPrice, offer.currency)}</span>. {descriptionText}
+            Toplam <span className="font-semibold">{money(offer.totalPrice, offer.currency)}</span>.
           </p>
 
           <div className="space-y-2">
             {hasCard3d && (
-              <label className="flex items-start gap-2">
+              <label className="flex items-start gap-2 rounded-lg border border-slate-700 p-3 hover:border-emerald-500 cursor-pointer">
                 <input type="radio" checked={paymentMethod === "card3d"} onChange={() => setPaymentMethod("card3d")} className="mt-1 h-4 w-4" />
                 <div>
                   <p className="text-slate-100 text-[0.8rem] font-semibold">💳 3D Secure</p>
-                  <p className="text-[0.7rem] text-slate-400">Kartla ödeyip rezervasyonu “paid” yaparsın (simülasyon).</p>
+                  <p className="text-[0.7rem] text-slate-400">Kartla ödeme (simülasyon). Ödeme sonrası rezervasyon oluşur.</p>
                 </div>
               </label>
             )}
 
             {hasPayAtHotel && (
-              <label className="flex items-start gap-2">
+              <label className="flex items-start gap-2 rounded-lg border border-slate-700 p-3 hover:border-emerald-500 cursor-pointer">
                 <input type="radio" checked={paymentMethod === "payAtHotel"} onChange={() => setPaymentMethod("payAtHotel")} className="mt-1 h-4 w-4" />
                 <div>
                   <p className="text-slate-100 text-[0.8rem] font-semibold">💵 Otelde ödeme</p>
-                  <p className="text-[0.7rem] text-slate-400">Ödemeyi girişte tesiste yaparsın.</p>
+                  <p className="text-[0.7rem] text-slate-400">Ödemeyi girişte yaparsın.</p>
                 </div>
               </label>
             )}
@@ -2532,12 +2594,12 @@ function PaymentModal({
           {error ? <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-[0.8rem] text-red-200">{error}</div> : null}
           {message ? <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-[0.8rem] text-emerald-200">{message}</div> : null}
 
-          <div className="flex justify-end gap-2 mt-1">
+          <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={onClose} className="rounded-md border border-slate-700 px-3 py-2 text-[0.75rem] text-slate-200 hover:border-slate-500">
-              İptal
+              Vazgeç
             </button>
-            <button type="button" disabled={saving || !paymentMethod} onClick={onConfirm} className="rounded-md bg-emerald-500 text-slate-950 px-3 py-2 text-[0.75rem] font-semibold hover:bg-emerald-400 disabled:opacity-60">
-              Rezervasyonu tamamla
+            <button type="button" disabled={saving || !paymentMethod} onClick={onConfirm} className="rounded-md bg-emerald-500 text-slate-950 px-4 py-2 text-[0.8rem] font-semibold hover:bg-emerald-400 disabled:opacity-60">
+              {saving ? "İşleniyor..." : "Rezervasyonu tamamla"}
             </button>
           </div>
         </div>
@@ -2547,7 +2609,7 @@ function PaymentModal({
         <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/70">
           <div className="bg-slate-950/95 rounded-2xl border border-slate-800 p-5 w-full max-w-md text-xs space-y-3 shadow-xl shadow-slate-950/60">
             <h2 className="text-sm font-semibold text-slate-100 mb-1">3D Secure doğrulama</h2>
-            <p className="text-[0.75rem] text-slate-300">MVP simülasyonudur. “Ödemeyi onayla” dersen ödeme başarılı sayılır ve rezervasyon oluşur.</p>
+            <p className="text-[0.75rem] text-slate-300">Simülasyon. Onayladığında ödeme başarılı sayılır ve rezervasyon oluşur.</p>
             <p className="text-[0.75rem] text-slate-200">{money(offer.totalPrice, offer.currency)} ödemeyi onaylıyor musun?</p>
             <div className="flex justify-end gap-2 mt-2">
               <button type="button" onClick={() => setThreeDSOpen(false)} className="rounded-md border border-slate-700 px-3 py-2 text-[0.75rem] text-slate-200 hover:border-slate-500">
@@ -2564,7 +2626,6 @@ function PaymentModal({
   );
 }
 
-/* -------------------- PACKAGE MODALS (PREMIUM) -------------------- */
 function PackageOffersModal({
   req,
   offers,
@@ -2576,7 +2637,7 @@ function PackageOffersModal({
   onDelete,
   onAccept
 }: {
-  req: PackageRequest;
+  req: any;
   offers: PackageOffer[];
   agenciesMap: Record<string, AgencyInfo>;
   nowMs: number;
@@ -2586,23 +2647,80 @@ function PackageOffersModal({
   onDelete: () => void;
   onAccept: (offer: PackageOffer) => void;
 }) {
-  const pax = safeNum(req.paxAdults, 0) + safeNum(req.paxChildren, 0);
-  const nights = req.nights ?? calcNightsFromISO(req.dateFrom, req.dateTo);
-  const deadlineMin = safeNum(req.responseDeadlineMinutes, 180);
-  const rem = formatRemainingPkg(req.createdAt, deadlineMin, nowMs);
-  const st: PackageRequestStatus =
-    (req.status as any) === "accepted" ? "accepted" :
-    (req.status as any) === "deleted" ? "deleted" :
+  // ✅ Firestore’daki tam doküman burada
+  const raw: any = (req?.raw && typeof req.raw === "object") ? req.raw : req;
+
+  const deadlineMin = safeNum(raw?.responseDeadlineMinutes ?? req?.responseDeadlineMinutes, 180);
+  const rem = formatRemainingPkg(raw?.createdAt ?? req?.createdAt, deadlineMin, nowMs);
+
+  const st: ("open" | "expired" | "accepted" | "deleted") =
+    String(raw?.status || req?.status || "open") === "accepted" ? "accepted" :
+    String(raw?.status || req?.status || "open") === "deleted" ? "deleted" :
     rem.expired ? "expired" : "open";
 
-  const barColor =
-    rem.color === "red" ? "bg-red-500" : rem.color === "yellow" ? "bg-amber-400" : "bg-emerald-500";
+  const barColor = rem.color === "red" ? "bg-red-500" : rem.color === "yellow" ? "bg-amber-400" : "bg-emerald-500";
 
-  const needs = Array.isArray(req.needs) ? req.needs : [];
-  const extras = Array.isArray(req.extras) ? req.extras : [];
-  const acts = Array.isArray(req.activities) ? req.activities : [];
-  const roomTypes = Array.isArray(req.roomTypes) ? req.roomTypes : [];
-  const childAges = Array.isArray(req.childrenAges) ? req.childrenAges : [];
+  // ✅ pretty JSON (timestamp’ları bozmadan)
+  const prettyJson = useMemo(() => {
+    try {
+      return JSON.stringify(raw, (_k, v) => {
+        // Timestamp ise toDate dene
+        if (v && typeof v === "object" && typeof (v as any).toDate === "function") {
+          return (v as any).toDate().toISOString();
+        }
+        return v;
+      }, 2);
+    } catch {
+      return String(raw);
+    }
+  }, [raw]);
+
+  // ✅ Tüm alanları otomatik “kart” olarak yazdırır
+  function renderValue(v: any) {
+    if (v === null || v === undefined) return "—";
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return String(v);
+    if (Array.isArray(v)) {
+      if (v.length === 0) return "—";
+      // basit dizi
+      if (v.every((x) => typeof x === "string" || typeof x === "number" || typeof x === "boolean")) {
+        return v.join(" • ");
+      }
+      // karma dizi
+      return v.map((x, i) => `${i + 1}) ${typeof x === "object" ? JSON.stringify(x) : String(x)}`).join("\n");
+    }
+    // obje
+    try {
+      return JSON.stringify(v, null, 2);
+    } catch {
+      return String(v);
+    }
+  }
+
+  const topPairs: { k: string; v: any }[] = [
+    { k: "Başlık", v: raw?.title },
+    { k: "Şehir", v: raw?.city },
+    { k: "İlçe", v: raw?.district },
+    { k: "Tarih", v: `${safeStr(raw?.dateFrom)} – ${safeStr(raw?.dateTo)}` },
+    { k: "Gece", v: raw?.nights ?? raw?.hotelNights ?? raw?.days },
+    { k: "Kişi", v: `${safeNum(raw?.paxAdults, 0)} yetişkin • ${safeNum(raw?.paxChildren, 0)} çocuk` },
+    { k: "Çocuk yaşları", v: raw?.childrenAges },
+    { k: "Bütçe", v: `${safeStr(raw?.budgetMin)} – ${safeStr(raw?.budgetMax)} ${safeStr(raw?.currency, "TRY")}` },
+    { k: "Board", v: raw?.boardPref },
+    { k: "Otel pref", v: raw?.hotelPref },
+    { k: "Oda pref", v: raw?.roomTypePref },
+    { k: "Transfer", v: `${raw?.wantsTransfer ? "Var" : "Yok"} • ${safeStr(raw?.transferType)}` },
+    { k: "Transfer Notu", v: raw?.transferNotes },
+    { k: "Uçuş Notu", v: raw?.flightNotes },
+    { k: "Araç", v: `${raw?.wantCar || raw?.wantsCar ? "Var" : "Yok"} • ${safeStr(raw?.vehicleClass)}` },
+    { k: "Araç koltuk", v: raw?.carSeats },
+    { k: "Sürücü sayısı", v: raw?.driverCount },
+    { k: "Notlar", v: raw?.notes ?? raw?.note },
+    { k: "Aktiviteler", v: raw?.activities },
+    { k: "Quality Score", v: raw?.qualityScore },
+    { k: "Rental Extras", v: raw?.rentalExtras },
+    { k: "Contact", v: raw?.contact },
+    { k: "Alternatif şehirler", v: raw?.cities }
+  ].filter((x) => x.v !== undefined);
 
   return (
     <div className="fixed inset-0 z-[70] flex items-start justify-center bg-black/70">
@@ -2611,8 +2729,10 @@ function PackageOffersModal({
         <div className="flex items-start justify-between gap-3">
           <div className="space-y-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="inline-flex items-center rounded-full border border-indigo-500/30 bg-indigo-500/10 px-3 py-1 text-[0.7rem] text-indigo-200">🧳 Paket Detayı & Teklifler</span>
-              <span className={`inline-flex items-center rounded-full border px-3 py-1 text-[0.7rem] ${badgeByPkgStatus(st)}`}>
+              <span className="inline-flex items-center rounded-full border border-indigo-500/30 bg-indigo-500/10 px-3 py-1 text-[0.7rem] text-indigo-200">
+                🧳 Paket Detayı & Teklifler
+              </span>
+              <span className={`inline-flex items-center rounded-full border px-3 py-1 text-[0.7rem] ${badgeByPkgStatus(st as any)}`}>
                 {st === "open" ? "Açık" : st === "expired" ? "Süre doldu" : st === "accepted" ? "Kabul edildi" : "Silindi"}
               </span>
               <span className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[0.7rem] text-slate-200">
@@ -2620,34 +2740,35 @@ function PackageOffersModal({
               </span>
             </div>
 
-            <h2 className="text-base font-semibold text-slate-100">{req.title || "Paket talebi"}</h2>
+            <h2 className="text-base font-semibold text-slate-100">{safeStr(raw?.title || "Paket talebi")}</h2>
             <p className="text-[0.8rem] text-slate-300">
-              {safeStr(req.city)}{req.district ? ` / ${req.district}` : ""} • {safeStr(req.dateFrom)} – {safeStr(req.dateTo)} • {nights} gece • {pax} kişi
+              {safeStr(raw?.city)}{raw?.district ? ` / ${raw.district}` : ""} • {safeStr(raw?.dateFrom)} – {safeStr(raw?.dateTo)}
             </p>
 
             <div className="mt-2 w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
               <div className={`h-full ${barColor}`} style={{ width: `${Math.round(rem.ratio * 100)}%` }} />
             </div>
-            <p className={`text-[0.75rem] font-semibold ${rem.color === "red" ? "text-red-300" : rem.color === "yellow" ? "text-amber-200" : "text-emerald-200"}`}>{rem.text}</p>
+            <p className={`text-[0.75rem] font-semibold ${rem.color === "red" ? "text-red-300" : rem.color === "yellow" ? "text-amber-200" : "text-emerald-200"}`}>
+              {rem.text}
+            </p>
           </div>
 
           <div className="flex flex-wrap gap-2 justify-end">
-          {st !== "accepted" ? (
-  <>
-    {st === "expired" && (
-      <button onClick={onRestart} className="rounded-md border border-emerald-500/70 px-3 py-2 text-[0.75rem] text-emerald-200 hover:bg-emerald-500/10">
-        Yeniden başlat
-      </button>
-    )}
-    <button onClick={onEdit} className="rounded-md border border-sky-500/70 px-3 py-2 text-[0.75rem] text-sky-200 hover:bg-sky-500/10">
-      Düzenle
-    </button>
-    <button onClick={onDelete} className="rounded-md border border-red-500/70 px-3 py-2 text-[0.75rem] text-red-200 hover:bg-red-500/10">
-      Sil
-    </button>
-  </>
-) : null}
-
+            {st !== "accepted" ? (
+              <>
+                {st === "expired" && (
+                  <button onClick={onRestart} className="rounded-md border border-emerald-500/70 px-3 py-2 text-[0.75rem] text-emerald-200 hover:bg-emerald-500/10">
+                    Yeniden başlat
+                  </button>
+                )}
+                <button onClick={onEdit} className="rounded-md border border-sky-500/70 px-3 py-2 text-[0.75rem] text-sky-200 hover:bg-sky-500/10">
+                  Düzenle
+                </button>
+                <button onClick={onDelete} className="rounded-md border border-red-500/70 px-3 py-2 text-[0.75rem] text-red-200 hover:bg-red-500/10">
+                  Sil
+                </button>
+              </>
+            ) : null}
 
             <button onClick={onClose} className="rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 text-[0.75rem] text-slate-200 hover:border-emerald-400">
               Kapat ✕
@@ -2655,47 +2776,53 @@ function PackageOffersModal({
           </div>
         </div>
 
-        {/* ✅ Misafirin girdiği her şey (tam detay) */}
-        <div className="grid gap-3 md:grid-cols-3">
-          <KeyVal k="Şehir / İlçe" v={`${safeStr(req.city)}${req.district ? " / " + req.district : ""}`} />
-          <KeyVal k="Tarih / Gece" v={`${safeStr(req.dateFrom)} – ${safeStr(req.dateTo)} (${nights} gece)`} />
-          <KeyVal k="Kişi / Oda" v={`${safeNum(req.paxAdults, 0)} yetişkin • ${safeNum(req.paxChildren, 0)} çocuk • ${req.roomsCount ? req.roomsCount + " oda" : "—"}`} />
-        </div>
+        {/* ✅ Firestore’daki TÜM bilgiler (otomatik) */}
+        <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-slate-100">Talep Detayı (DB’de kayıtlı tüm bilgiler)</p>
+            <button
+              type="button"
+              onClick={() => {
+                try {
+                  navigator.clipboard.writeText(prettyJson);
+                  alert("Talep detayları panoya kopyalandı.");
+                } catch {}
+              }}
+              className="rounded-md border border-slate-700 px-3 py-2 text-[0.75rem] text-slate-200 hover:border-slate-500"
+            >
+              Kopyala
+            </button>
+          </div>
 
-        <div className="grid gap-3 md:grid-cols-3">
-          <KeyVal k="Çocuk yaşları" v={childAges.length ? childAges.join(", ") : "—"} />
-          <KeyVal k="Oda tipleri" v={roomTypes.length ? roomTypes.join(", ") : "—"} />
-          <KeyVal k="Ülke" v={req.country || "Türkiye"} />
-        </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            {topPairs.map((it) => (
+              <div key={it.k} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                <p className="text-[0.72rem] text-slate-400">{it.k}</p>
+                <pre className="text-slate-100 text-sm mt-1 whitespace-pre-wrap">{renderValue(it.v)}</pre>
+              </div>
+            ))}
+          </div>
 
-        <div className="grid gap-3 md:grid-cols-2">
-          <KeyVal k="İhtiyaçlar" v={needs.length ? needs.join(" • ") : "—"} />
-          <KeyVal k="Not / Şartlar" v={req.note || "—"} />
-        </div>
+          <details className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+            <summary className="cursor-pointer text-[0.8rem] text-slate-200 font-semibold">Tüm alanları aç (JSON)</summary>
+            <pre className="mt-3 whitespace-pre-wrap text-[0.72rem] text-slate-300 overflow-x-auto">{prettyJson}</pre>
+          </details>
 
-        <div className="grid gap-3 md:grid-cols-3">
-          <KeyVal k="Transfer" v={req.wantsTransfer ? `Var • ${req.transferType === "round" ? "Çift yön" : "Tek yön"}${req.transferNotes ? " • " + req.transferNotes : ""}` : "Yok"} />
-          <KeyVal k="Tur" v={req.wantsTours ? `Var • ${safeNum(req.tourCount, 0)} tur${req.tourNotes ? " • " + req.tourNotes : ""}` : "Yok"} />
-          <KeyVal k="Araç" v={req.wantsCar ? `Var • ${req.carType || "Araç tipi"}${req.licenseYear ? " • Ehliyet yılı: " + req.licenseYear : ""}${req.carNotes ? " • " + req.carNotes : ""}` : "Yok"} />
-        </div>
-
-        <div className="grid gap-3 md:grid-cols-2">
-          <KeyVal k="Aktiviteler" v={acts.length ? acts.join(" • ") : "—"} />
-          <KeyVal k="Ekstralar / Eşya" v={extras.length ? extras.join(" • ") : "—"} />
+          <p className="text-[0.7rem] text-slate-500">
+            Bu bölüm Firestore dokümanının tamamını gösterir. Artık hiçbir bilgi boş kalmaz.
+          </p>
         </div>
 
         {/* ✅ Teklifler */}
         <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 space-y-2">
           <div className="flex items-center justify-between gap-2">
             <p className="text-sm font-semibold text-slate-100">Gelen Paket Teklifleri</p>
-            <p className="text-[0.75rem] text-slate-400">
-              Para birimi ve kırılım önemlidir. Kabul ettiğinde ödeme adımı açılır ve iletişim bilgilerin acentaya görünür.
-            </p>
+            <p className="text-[0.75rem] text-slate-400">Her teklifi yapan acentanın işletme bilgileri görünür.</p>
           </div>
 
           {offers.length === 0 ? (
             <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4 text-slate-300">
-              Henüz paket teklifi yok. Acentalar teklif gönderdikçe burada göreceksin.
+              Henüz paket teklifi yok.
             </div>
           ) : (
             <div className="grid gap-3">
@@ -2707,7 +2834,7 @@ function PackageOffersModal({
                 const updatedStr = o.updatedAt?.toDate ? o.updatedAt.toDate().toLocaleString("tr-TR") : "";
                 const createdStr = o.createdAt?.toDate ? o.createdAt.toDate().toLocaleString("tr-TR") : "";
 
-                const disabled = st === "expired" || o.status === "accepted" || (req.status as any) === "accepted";
+                const disabled = st === "expired" || o.status === "accepted" || st === "accepted";
 
                 return (
                   <div key={o.id} className="rounded-2xl border border-white/10 bg-white/5 p-4">
@@ -2719,12 +2846,9 @@ function PackageOffersModal({
                           <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
                             {o.status || "sent"}
                           </span>
-                          <span className="text-[0.7rem] text-slate-400">
-                            {updatedStr ? `Güncelleme: ${updatedStr}` : createdStr ? `Teklif: ${createdStr}` : ""}
-                          </span>
+                          <span className="text-[0.7rem] text-slate-400">{updatedStr ? `Güncelleme: ${updatedStr}` : createdStr ? `Teklif: ${createdStr}` : ""}</span>
                         </div>
 
-                        {/* Agency business info */}
                         <div className="rounded-xl border border-white/10 bg-black/10 p-3">
                           <p className="text-[0.72rem] text-slate-400 mb-1">Acenta bilgileri</p>
                           <p className="text-[0.8rem] text-slate-200">
@@ -2732,15 +2856,12 @@ function PackageOffersModal({
                             {ap?.city ? ` • ${ap.city}${ap?.district ? " / " + ap.district : ""}` : ""}
                           </p>
                           <div className="text-[0.75rem] text-slate-300">
-                            {ap?.website ? `Website: ${ap.website}` : ""}
-                            {ap?.phone ? ` • Tel: ${ap.phone}` : ""}
-                            {ap?.taxNo ? ` • Vergi No: ${ap.taxNo}` : ""}
+                            Tel: {safeStr(ap?.phone)} {ap?.taxNo ? ` • Vergi No: ${ap.taxNo}` : ""}
                           </div>
                           {ap?.address ? <div className="text-[0.75rem] text-slate-400 mt-1">Adres: {ap.address}</div> : null}
-                          {ap?.about ? <div className="text-[0.75rem] text-slate-400 mt-1">Hakkında: {ap.about}</div> : null}
+                          {ap?.about ? <div className="text-[0.75rem] text-slate-400 mt-1">Açıklama: {ap.about}</div> : null}
                         </div>
 
-                        {/* Offer plan */}
                         <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                           <p className="text-[0.75rem] text-slate-400 mb-1">Teklif planı</p>
                           <p className="text-[0.8rem] text-slate-200">
@@ -2750,27 +2871,17 @@ function PackageOffersModal({
                             Transfer: <b>{safeStr(d.transferType || d.transferPlan)}</b>
                           </p>
                           {Array.isArray(d.tourPlan) && d.tourPlan.length > 0 ? (
-                            <p className="text-[0.75rem] text-slate-300">
-                              Tur planı: <span className="text-slate-200">{d.tourPlan.join(" • ")}</span>
-                            </p>
+                            <p className="text-[0.75rem] text-slate-300">Tur planı: <span className="text-slate-200">{d.tourPlan.join(" • ")}</span></p>
                           ) : null}
-                          {d.carPlan ? <p className="text-[0.75rem] text-slate-300">Araç: <span className="text-slate-200">{d.carPlan}</span></p> : null}
-                          {d.extrasPlan ? <p className="text-[0.75rem] text-slate-300">Diğer: <span className="text-slate-200">{d.extrasPlan}</span></p> : null}
                           {o.note ? <p className="text-[0.75rem] text-slate-300">Not: <span className="text-slate-200">{o.note}</span></p> : null}
                         </div>
                       </div>
 
-                      {/* Price + breakdown + accept */}
                       <div className="space-y-3 min-w-[280px]">
                         <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-right">
                           <p className="text-[0.7rem] text-slate-400">Toplam</p>
                           <p className="text-lg font-extrabold text-emerald-200">{money(o.totalPrice, o.currency)}</p>
-                          <p className="text-[0.7rem] text-slate-400">
-                            Para birimi: <b className="text-slate-200">{o.currency}</b>
-                          </p>
-                          <p className="text-[0.7rem] text-slate-400">
-                            Not: KDV / vergiler ve operasyon detayları acenta planına göre değişebilir.
-                          </p>
+                          <p className="text-[0.7rem] text-slate-400">Para birimi: <b className="text-slate-200">{o.currency}</b></p>
                         </div>
 
                         <div className="grid grid-cols-2 gap-2">
@@ -2785,15 +2896,12 @@ function PackageOffersModal({
                           disabled={disabled}
                           onClick={() => onAccept(o)}
                           className="w-full rounded-md bg-emerald-500 text-slate-950 px-4 py-2 text-[0.85rem] font-semibold hover:bg-emerald-400 disabled:opacity-60"
-                          title={st === "expired" ? "Süre doldu" : "Kabul et → ödeme"}
                         >
-                          {o.status === "accepted" || (req.status as any) === "accepted" ? "Kabul edildi" : "Teklifi kabul et → Ödeme"}
+                          {disabled ? "Kabul edildi / Kapalı" : "Teklifi kabul et → Ödeme"}
                         </button>
 
                         {st === "expired" ? (
-                          <p className="text-[0.75rem] text-amber-200">
-                            Süre doldu. Yeniden başlatmadan kabul edemezsin.
-                          </p>
+                          <p className="text-[0.75rem] text-amber-200">Süre doldu. Yeniden başlatmadan kabul edemezsin.</p>
                         ) : null}
                       </div>
                     </div>
@@ -2804,34 +2912,12 @@ function PackageOffersModal({
           )}
         </div>
 
-        <div className="text-[0.72rem] text-slate-500">
-          Paket kabul + ödeme sonrası: Talep rezervasyona düşer, rezervasyonda tüm detaylar kanıt niteliğinde saklanır.
-        </div>
       </div>
     </div>
   );
 }
 
-function KeyVal({ k, v }: { k: string; v: any }) {
-  const val = v === null || v === undefined || String(v).trim() === "" ? "—" : String(v);
-  return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-      <p className="text-[0.72rem] text-slate-400">{k}</p>
-      <p className="text-slate-100 text-sm mt-1 whitespace-pre-wrap">{val}</p>
-    </div>
-  );
-}
 
-function Mini({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-      <p className="text-[0.72rem] text-slate-400">{label}</p>
-      <p className="text-sm text-slate-100 mt-1 whitespace-pre-wrap">{value}</p>
-    </div>
-  );
-}
-
-/* -------------------- PACKAGE PAYMENT MODAL -------------------- */
 function PackagePaymentModal({
   req,
   offer,
@@ -2867,7 +2953,6 @@ function PackagePaymentModal({
   const nights = req.nights ?? calcNightsFromISO(req.dateFrom, req.dateTo);
   const pax = safeNum(req.paxAdults, 0) + safeNum(req.paxChildren, 0);
 
-  // ödeme seçenekleri (acenta belirtmişse onu öncelik say)
   const po = offer.paymentOptions || {};
   const allowCard3d = po.card3d !== false;
   const allowTransfer = po.transfer !== false;
@@ -2916,7 +3001,7 @@ function PackagePaymentModal({
                 <input type="radio" checked={method === "transfer"} onChange={() => setMethod("transfer")} className="mt-1 h-4 w-4" />
                 <div>
                   <p className="text-slate-100 font-semibold text-sm">🏦 Havale / EFT</p>
-                  <p className="text-[0.72rem] text-slate-400">“transfer_pending” statüsü açılır. Dekontu mesajdan iletebilirsin.</p>
+                  <p className="text-[0.72rem] text-slate-400">“transfer_pending” statüsü açılır.</p>
                 </div>
               </label>
             )}
@@ -2936,18 +3021,9 @@ function PackagePaymentModal({
                 <input type="radio" checked={method === "payAtDoor"} onChange={() => setMethod("payAtDoor")} className="mt-1 h-4 w-4" />
                 <div>
                   <p className="text-slate-100 font-semibold text-sm">🚪 Kapıda ödeme</p>
-                  <p className="text-[0.72rem] text-slate-400">Ödeme “pay_at_door” statüsü ile açılır (operasyon acenta yönetir).</p>
+                  <p className="text-[0.72rem] text-slate-400">Ödeme “pay_at_door” statüsü açılır.</p>
                 </div>
               </label>
-            )}
-
-            {method === "transfer" && (
-              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-[0.75rem] text-amber-100">
-                Havale talimatı (örnek):
-                <div className="mt-1 text-amber-200/90">
-                  IBAN: TR00 0000 0000 0000 0000 0000 00 • Açıklama: <b>{req.id}</b>
-                </div>
-              </div>
             )}
           </div>
 
@@ -2969,9 +3045,7 @@ function PackagePaymentModal({
         <div className="fixed inset-0 z-[99] flex items-center justify-center bg-black/70">
           <div className="bg-slate-950/95 rounded-2xl border border-slate-800 p-5 w-full max-w-md text-xs space-y-3 shadow-xl shadow-slate-950/60">
             <h2 className="text-sm font-semibold text-slate-100 mb-1">3D Secure doğrulama</h2>
-            <p className="text-[0.75rem] text-slate-300">
-              MVP simülasyonudur. “Ödemeyi onayla” dersen ödeme başarılı sayılır ve paket rezervasyonu oluşturulur.
-            </p>
+            <p className="text-[0.75rem] text-slate-300">Simülasyon. Onayladığında paket rezervasyonu oluşturulur.</p>
             <p className="text-[0.75rem] text-slate-200">{money(offer.totalPrice, offer.currency)} ödemeyi onaylıyor musun?</p>
             <div className="flex justify-end gap-2 mt-2">
               <button onClick={() => setThreeDSOpen(false)} className="rounded-md border border-slate-700 px-3 py-2 text-[0.75rem] text-slate-200 hover:border-slate-500">
@@ -2987,117 +3061,22 @@ function PackagePaymentModal({
     </>
   );
 }
- function RoomTypeModal({
-  room,
-  onClose
-}: {
-  room: RoomTypeProfile;
-  onClose: () => void;
-}) {
-  const images = (room?.imageUrls ?? room?.images ?? room?.gallery ?? room?.photos ?? []).filter(Boolean);
-  const [active, setActive] = useState(0);
 
-  const [imgOpen, setImgOpen] = useState(false);
-  const [imgSrc, setImgSrc] = useState<string | null>(null);
-
-  const openImage = (src?: string | null) => {
-    if (!src) return;
-    setImgSrc(src);
-    setImgOpen(true);
-  };
-  const closeImage = () => {
-    setImgOpen(false);
-    setImgSrc(null);
-  };
-
+function KeyVal({ k, v }: { k: string; v: any }) {
+  const val = v === null || v === undefined || String(v).trim() === "" ? "—" : String(v);
   return (
-    <>
-      <div className="fixed inset-0 z-[70] flex items-start justify-center bg-black/70">
-        <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
-        <div className="relative mt-14 w-full max-w-3xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-xl shadow-slate-950/60 max-h-[85vh] overflow-y-auto space-y-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h3 className="text-base font-extrabold text-slate-100">{room?.name || "Oda tipi"}</h3>
-              {room?.shortDescription ? (
-                <p className="text-[0.8rem] text-slate-300 mt-1">{room.shortDescription}</p>
-              ) : null}
-            </div>
-
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-md border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:border-emerald-400"
-            >
-              Kapat ✕
-            </button>
-          </div>
-
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/60 overflow-hidden">
-            {images.length ? (
-              <>
-                <button
-                  type="button"
-                  className="w-full h-64 relative group"
-                  onClick={() => openImage(images[active])}
-                  title="Büyütmek için tıkla"
-                >
-                  <img src={images[active]} alt="oda görseli" className="w-full h-full object-cover" />
-                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition" />
-                  <div className="absolute bottom-3 right-3 rounded-md border border-white/25 bg-black/40 px-2 py-1 text-[0.72rem] text-white">
-                    🔍 Büyüt
-                  </div>
-                </button>
-
-                {images.length > 1 ? (
-                  <div className="flex gap-2 p-2 bg-slate-950/80 border-t border-slate-800 overflow-x-auto">
-                    {images.slice(0, 14).map((img: string, idx: number) => (
-                      <button
-                        key={idx}
-                        type="button"
-                        onClick={() => setActive(idx)}
-                        className={`w-16 h-16 rounded-lg border overflow-hidden ${
-                          active === idx ? "border-emerald-400" : "border-slate-700"
-                        }`}
-                      >
-                        <img src={img} alt={`thumb-${idx}`} className="w-full h-full object-cover" />
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </>
-            ) : (
-              <div className="h-64 flex items-center justify-center text-slate-500 text-sm">
-                Bu oda tipi için görsel yok.
-              </div>
-            )}
-          </div>
-
-          {room?.description ? (
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-              <p className="text-[0.75rem] text-slate-400 mb-1">Açıklama</p>
-              <p className="text-slate-100 text-sm whitespace-pre-wrap">{room.description}</p>
-            </div>
-          ) : null}
-        </div>
-      </div>
-
-      {/* Lightbox */}
-      {imgOpen && imgSrc ? (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80">
-          <button className="absolute inset-0" onClick={closeImage} aria-label="Kapat" />
-          <div className="relative max-w-5xl w-[92vw]">
-            <button
-              type="button"
-              onClick={closeImage}
-              className="absolute -top-10 right-0 rounded-md border border-white/20 bg-black/40 px-3 py-2 text-sm text-white hover:bg-black/60"
-            >
-              Kapat ✕
-            </button>
-            <img src={imgSrc} alt="Büyük oda görseli" className="w-full max-h-[78vh] object-contain rounded-xl border border-white/10" />
-          </div>
-        </div>
-      ) : null}
-    </>
+    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+      <p className="text-[0.72rem] text-slate-400">{k}</p>
+      <p className="text-slate-100 text-sm mt-1 whitespace-pre-wrap">{val}</p>
+    </div>
   );
 }
 
+function Mini({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+      <p className="text-[0.72rem] text-slate-400">{label}</p>
+      <p className="text-sm text-slate-100 mt-1 whitespace-pre-wrap">{value}</p>
+    </div>
+  );
+}
