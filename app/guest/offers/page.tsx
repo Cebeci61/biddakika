@@ -89,6 +89,8 @@ interface RequestSummary {
   responseDeadlineMinutes?: number;
   createdAt?: Timestamp;
   status?: string | null;
+  childrenAges?: number[];
+
 
   type?: string;
   isGroup?: boolean;
@@ -116,6 +118,11 @@ interface RoomTypeProfile {
   maxAdults?: number | null;
   maxChildren?: number | null;
   imageUrls?: string[];
+    // ✅ görseller (hangi isimle gelirse gelsin)
+  images?: string[];
+  gallery?: string[];
+  photos?: string[];
+
 }
 
 interface HotelProfile {
@@ -612,9 +619,10 @@ export default function GuestOffersPage() {
   async function restartPackageRequest(p: PackageRequest) {
     try {
       await updateDoc(doc(db, "packageRequests", p.id), { createdAt: serverTimestamp(), status: "open" });
-      setPackageRequests((prev) =>
-        prev.map((x) => (x.id === p.id ? { ...x, createdAt: Timestamp.fromDate(new Date()), status: "open" } : x))
-      );
+setPackageRequests((prev) =>
+  prev.map((x) => (x.id === p.id ? { ...x, createdAt: Timestamp.fromDate(new Date()), status: "open" } : x))
+);
+
       setActionMessage("Paket talebin yeniden başlatıldı. Acentalar tekrar teklif verebilir.");
     } catch (e) {
       console.error(e);
@@ -673,6 +681,26 @@ export default function GuestOffersPage() {
         method === "card3d" ? "paid" : method === "transfer" ? "transfer_pending" : "pay_at_door";
 
       // booking oluştur (package)
+const agency = agenciesMap[pkgPayOffer.agencyId];
+const ap = agency?.agencyProfile ?? null;
+
+const agencySnapshot = {
+  id: pkgPayOffer.agencyId,
+  displayName: agency?.displayName ?? pkgPayOffer.agencyName ?? null,
+  email: agency?.email ?? null,
+  businessName: ap?.businessName ?? null,
+  phone: ap?.phone ?? null,
+  address: ap?.address ?? null,
+  city: ap?.city ?? null,
+  district: ap?.district ?? null,
+  taxNo: ap?.taxNo ?? null,
+  about: ap?.about ?? null
+};
+
+const requestSnapshot = pkgPayReq;   // misafirin paket talebi (tamamı)
+const offerSnapshot = pkgPayOffer;   // acentanın teklifi (tamamı)
+
+
       const bkRef = await addDoc(collection(db, "bookings"), {
         type: "package",
 
@@ -687,7 +715,10 @@ export default function GuestOffersPage() {
 
         agencyId: pkgPayOffer.agencyId ?? null,
         agencyName: pkgPayOffer.agencyName ?? null,
-
+          // ✅ SNAPSHOTLAR
+  agencySnapshot,
+  requestSnapshot,
+  offerSnapshot,
         // paket özeti
         title: pkgPayReq.title ?? null,
         country: pkgPayReq.country ?? "Türkiye",
@@ -1015,6 +1046,8 @@ export default function GuestOffersPage() {
               adults: v.adults,
               childrenCount: v.childrenCount ?? 0,
               roomsCount: v.roomsCount ?? 1,
+              childrenAges: Array.isArray(v.childrenAges) ? v.childrenAges : [],
+
               roomTypes: v.roomTypes ?? [],
               responseDeadlineMinutes: v.responseDeadlineMinutes ?? 60,
               createdAt: v.createdAt,
@@ -1467,8 +1500,8 @@ export default function GuestOffersPage() {
         {typeFilter !== "hotel" && typeFilter !== "group" && packageRequests.length > 0 && (
           <section className="space-y-3">
             {packageRequests
-              .filter((p) => (cityFilter === "all" ? true : p.city === cityFilter))
-              .filter((p) => {
+  .filter((p) => (cityFilter === "all" ? true : p.city === cityFilter))             
+   .filter((p) => {
                 const q = qText.trim().toLowerCase();
                 if (!q) return true;
                 const hay = [p.id, p.title, p.city, p.district, p.note, (p.needs || []).join(" ")]
@@ -1477,6 +1510,7 @@ export default function GuestOffersPage() {
                   .toLowerCase();
                 return hay.includes(q);
               })
+              
               .map((p) => {
                 const offersForReq = packageOffersByReq[p.id] ?? [];
                 const best = guessBestPackageOffer(offersForReq);
@@ -1548,19 +1582,33 @@ export default function GuestOffersPage() {
                           Detay / Teklifler
                         </button>
 
-                        {st === "expired" && (
-                          <div className="flex gap-2">
-                            <button onClick={() => restartPackageRequest(p)} className="rounded-md border border-emerald-500/60 px-3 py-2 text-[0.75rem] text-emerald-200 hover:bg-emerald-500/10">
-                              Yeniden başlat
-                            </button>
-                            <button onClick={() => editPackageRequest(p)} className="rounded-md border border-sky-500/60 px-3 py-2 text-[0.75rem] text-sky-200 hover:bg-sky-500/10">
-                              Düzenle
-                            </button>
-                            <button onClick={() => deletePackageRequest(p)} className="rounded-md border border-red-500/60 px-3 py-2 text-[0.75rem] text-red-200 hover:bg-red-500/10">
-                              Sil
-                            </button>
-                          </div>
-                        )}
+                    {st !== "accepted" && (
+  <div className="flex gap-2">
+    {st === "expired" && (
+      <button
+        onClick={() => restartPackageRequest(p)}
+        className="rounded-md border border-emerald-500/60 px-3 py-2 text-[0.75rem] text-emerald-200 hover:bg-emerald-500/10"
+      >
+        Yeniden başlat
+      </button>
+    )}
+
+    <button
+      onClick={() => editPackageRequest(p)}
+      className="rounded-md border border-sky-500/60 px-3 py-2 text-[0.75rem] text-sky-200 hover:bg-sky-500/10"
+    >
+      Düzenle
+    </button>
+
+    <button
+      onClick={() => deletePackageRequest(p)}
+      className="rounded-md border border-red-500/60 px-3 py-2 text-[0.75rem] text-red-200 hover:bg-red-500/10"
+    >
+      Sil
+    </button>
+  </div>
+)}
+
                       </div>
                     </div>
 
@@ -1895,8 +1943,21 @@ function OfferDetailModal({
   onClose: () => void;
 }) {
   const hp = hotel?.hotelProfile;
-  const hotelImages = hp?.imageUrls ?? [];
+  const hotelImages = (hp?.imageUrls ?? []).filter(Boolean);
   const [activeHotelImage, setActiveHotelImage] = useState(0);
+
+  // ✅ Lightbox (otel görsel büyütme)
+  const [imgOpen, setImgOpen] = useState(false);
+  const [imgSrc, setImgSrc] = useState<string | null>(null);
+  const openImage = (src?: string | null) => {
+    if (!src) return;
+    setImgSrc(src);
+    setImgOpen(true);
+  };
+  const closeImage = () => {
+    setImgOpen(false);
+    setImgSrc(null);
+  };
 
   const [roomModalOpen, setRoomModalOpen] = useState(false);
   const [roomModalRoom, setRoomModalRoom] = useState<RoomTypeProfile | null>(null);
@@ -1929,21 +1990,78 @@ function OfferDetailModal({
     return diff > 0 ? diff : 1;
   })();
 
+  // ✅ Talep verisi (RequestSummary içinde hangi alanlar varsa onları gösteririz)
+  const reqAny: any = req || {};
+  const reqChildrenAges: number[] = Array.isArray(reqAny.childrenAges) ? reqAny.childrenAges : [];
+  const reqBoardType = reqAny.boardType || reqAny.boardtype || null; // sende "BB" var
+  const reqDesiredStars = Array.isArray(reqAny.desiredStarRatings) ? reqAny.desiredStarRatings : (reqAny.starRating ? [reqAny.starRating] : []);
+  const reqFeatureKeys = Array.isArray(reqAny.featureKeys) ? reqAny.featureKeys : [];
+  const reqHotelFeaturePrefs = Array.isArray(reqAny.hotelFeaturePrefs) ? reqAny.hotelFeaturePrefs : [];
+  const reqHotelFeatureNote = reqAny.hotelFeatureNote || null;
+  const reqResponseTimeUnit = reqAny.responseTimeUnit || null;
+
+  // ✅ Fiyat geçmişi
   const hist = Array.isArray(offer.priceHistory) ? offer.priceHistory : [];
   const histSorted = hist
     .slice()
     .sort((a: any, b: any) => (a?.createdAt?.toMillis?.() ?? 0) - (b?.createdAt?.toMillis?.() ?? 0));
 
+  const pricesAll = histSorted.map((h: any) => Number(h?.price ?? 0)).filter((n) => n > 0);
+  const pricesHotel = histSorted.filter((h: any) => h?.actor === "hotel").map((h: any) => Number(h?.price ?? 0)).filter((n) => n > 0);
+
+  const firstHotel = pricesHotel.length ? pricesHotel[0] : (Number(offer.totalPrice ?? 0) || 0);
+  const minHotel = pricesHotel.length ? Math.min(...pricesHotel) : null;
+  const lastPrice = Number(offer.totalPrice ?? 0) || (pricesAll.length ? pricesAll[pricesAll.length - 1] : 0);
+
+  const bargained = (() => {
+    if (!pricesHotel.length) return false;
+    if (pricesHotel.length >= 2) return true;
+    // tek hotel fiyatı bile varsa ama guest counter varsa pazarlık var say
+    return histSorted.some((h: any) => h?.actor === "guest");
+  })();
+
+  const dropAmount = (minHotel != null && firstHotel > 0) ? (firstHotel - minHotel) : 0;
+  const dropPct = (minHotel != null && firstHotel > 0) ? Math.round((dropAmount / firstHotel) * 100) : 0;
+
+  const cancelTone = cancelText ? "border-slate-800 bg-slate-950/90" : "border-slate-800 bg-slate-950/90";
+
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60">
         <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
-        <div className="relative mt-14 w-full max-w-3xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-xl shadow-slate-950/60 max-h-[85vh] overflow-y-auto text-[0.85rem] space-y-4">
+
+        <div className="relative mt-10 w-full max-w-5xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-xl shadow-slate-950/60 max-h-[88vh] overflow-y-auto text-[0.85rem] space-y-4">
+          {/* Header */}
           <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-base font-semibold text-slate-100">Teklif detayı</h2>
-              <p className="text-[0.75rem] text-slate-500">Teklif #{offer.id}</p>
+            <div className="space-y-1">
+              <h2 className="text-base font-semibold text-slate-100">Otel Detayı</h2>
+              <p className="text-[0.75rem] text-slate-500">
+                Teklif #{offer.id} • {offer.hotelName || hotel?.displayName || "Otel"}
+              </p>
+
+              {/* ✅ Pazarlık özeti hızlı rozetler */}
+              <div className="flex flex-wrap gap-2 pt-1">
+                <span className="inline-flex items-center rounded-md border border-slate-700 bg-slate-950/60 px-2 py-1 text-[0.72rem] text-slate-200">
+                  Başlangıç: <b className="ml-1 text-slate-100">{money(firstHotel, offer.currency)}</b>
+                </span>
+
+                {minHotel != null && (
+                  <span className="inline-flex items-center rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[0.72rem] text-emerald-200">
+                    En düşük: <b className="ml-1">{money(minHotel, offer.currency)}</b>
+                    {dropAmount > 0 ? <span className="ml-2 text-emerald-300">(-{dropPct}%)</span> : null}
+                  </span>
+                )}
+
+                <span className="inline-flex items-center rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[0.72rem] text-sky-200">
+                  Son fiyat: <b className="ml-1">{money(lastPrice, offer.currency)}</b>
+                </span>
+
+                <span className={`inline-flex items-center rounded-md border px-2 py-1 text-[0.72rem] ${bargained ? "border-amber-500/35 bg-amber-500/10 text-amber-200" : "border-slate-700 bg-slate-950/60 text-slate-300"}`}>
+                  {bargained ? "Pazarlık yapıldı" : "Pazarlık yok"}
+                </span>
+              </div>
             </div>
+
             <button
               type="button"
               onClick={onClose}
@@ -1953,21 +2071,38 @@ function OfferDetailModal({
             </button>
           </div>
 
+          {/* Top area: gallery + hotel highlights */}
           <div className="grid md:grid-cols-[1.4fr_minmax(0,1.6fr)] gap-4">
-            <div className="rounded-xl border border-slate-800 bg-slate-900/80 overflow-hidden flex flex-col">
+            {/* Gallery */}
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/60 overflow-hidden flex flex-col">
               {hotelImages.length > 0 ? (
                 <>
-                  <div className="flex-1 overflow-hidden min-h-[220px]">
-                    <img src={hotelImages[activeHotelImage]} alt={hotel?.displayName || "Otel görseli"} className="w-full h-full object-cover" />
-                  </div>
+                  <button
+                    type="button"
+                    className="flex-1 overflow-hidden min-h-[260px] relative group"
+                    onClick={() => openImage(hotelImages[activeHotelImage])}
+                    title="Büyütmek için tıkla"
+                  >
+                    <img
+                      src={hotelImages[activeHotelImage]}
+                      alt={hotel?.displayName || "Otel görseli"}
+                      className="w-full h-full object-cover"
+                    />
+                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition" />
+                    <div className="absolute bottom-3 right-3 rounded-md border border-white/25 bg-black/40 px-2 py-1 text-[0.72rem] text-white">
+                      🔍 Büyüt
+                    </div>
+                  </button>
+
                   {hotelImages.length > 1 && (
-                    <div className="flex gap-1 p-1 bg-slate-950/80 border-t border-slate-800 overflow-x-auto">
-                      {hotelImages.map((img, idx) => (
+                    <div className="flex gap-2 p-2 bg-slate-950/80 border-t border-slate-800 overflow-x-auto">
+                      {hotelImages.slice(0, 14).map((img, idx) => (
                         <button
                           key={idx}
                           type="button"
                           onClick={() => setActiveHotelImage(idx)}
-                          className={`w-14 h-14 rounded-md border overflow-hidden ${activeHotelImage === idx ? "border-emerald-400" : "border-slate-700"}`}
+                          className={`w-16 h-16 rounded-lg border overflow-hidden ${activeHotelImage === idx ? "border-emerald-400" : "border-slate-700"}`}
+                          title="Seç"
                         >
                           <img src={img} alt={`Otel görsel ${idx + 1}`} className="w-full h-full object-cover" />
                         </button>
@@ -1976,74 +2111,154 @@ function OfferDetailModal({
                   )}
                 </>
               ) : (
-                <div className="flex flex-col items-center justify-center text-slate-500 text-xs flex-1 min-h-[220px]">
+                <div className="flex flex-col items-center justify-center text-slate-500 text-xs flex-1 min-h-[260px]">
                   <span className="text-3xl mb-1">🏨</span>
                   <span>Bu otel henüz görsel eklememiş.</span>
                 </div>
               )}
             </div>
 
-            <div className="space-y-2">
-              <div>
-                <h2 className="text-sm font-semibold text-slate-100">Otel: {hotel?.displayName || offer.hotelName || "Otel"}</h2>
-                {hp?.starRating && <p className="text-[0.75rem] text-amber-300">{hp.starRating}★</p>}
+            {/* Hotel showcase (NO website, NO contact focus) */}
+            <div className="space-y-3">
+              <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-base font-semibold text-slate-100">
+                      {hotel?.displayName || offer.hotelName || "Otel"}
+                    </h2>
+                    {hp?.starRating ? (
+                      <p className="text-[0.8rem] text-amber-300 mt-1">{hp.starRating}★</p>
+                    ) : (
+                      <p className="text-[0.75rem] text-slate-500 mt-1">★ Puan bilgisi yok</p>
+                    )}
+                  </div>
+
+                  {mapUrl ? (
+                    <a
+                      href={mapUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-md border border-slate-700 px-3 py-2 text-[0.75rem] text-sky-200 hover:border-sky-400"
+                    >
+                      Haritada gör
+                    </a>
+                  ) : null}
+                </div>
+
+                {hp?.address ? (
+                  <p className="text-[0.8rem] text-slate-300 mt-3">
+                    <span className="text-slate-400">Adres: </span>
+                    {hp.address}
+                  </p>
+                ) : null}
+
+                {/* ✅ Website kaldırıldı */}
+
+                {/* ✅ Otel hakkında daha “şov” */}
+                {hp?.description ? (
+                  <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                    <p className="text-[0.75rem] text-slate-400 mb-1">Otel hakkında</p>
+                    <p className="text-[0.82rem] text-slate-200 leading-relaxed">{hp.description}</p>
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-slate-400 text-[0.8rem]">
+                    Otel açıklaması eklenmemiş.
+                  </div>
+                )}
+
+                {/* İptal + ödeme metni (kısa, karar için gerekli) */}
+                <div className="grid md:grid-cols-2 gap-2 mt-3">
+                  <div className={`rounded-xl border ${cancelTone} p-3`}>
+                    <p className="text-[0.75rem] text-slate-400 mb-1">İptal</p>
+                    <p className="text-[0.8rem] text-slate-200">{cancelText || "Bilgi yok"}</p>
+                  </div>
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/90 p-3">
+                    <p className="text-[0.75rem] text-slate-400 mb-1">Ödeme</p>
+                    <p className="text-[0.8rem] text-slate-200">{paymentText || "Bilgi yok"}</p>
+                  </div>
+                </div>
               </div>
 
-              {hp?.address && (
-                <p className="text-[0.75rem] text-slate-300">
-                  <span className="text-slate-400">Adres: </span>
-                  {hp.address}
-                </p>
-              )}
+              {/* ✅ Misafirin kendi talebi (tam görsün) */}
+              <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
+                <p className="text-[0.8rem] font-semibold text-slate-100 mb-2">Senin otel talebin</p>
 
-              {hotel?.website ? (
-                <p className="text-[0.75rem] text-sky-300">
-                  <a href={hotel.website} target="_blank" rel="noreferrer" className="hover:underline">Website</a>
-                </p>
-              ) : null}
+                <div className="grid md:grid-cols-2 gap-2 text-[0.8rem]">
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                    <p className="text-[0.72rem] text-slate-400">Tarih</p>
+                    <p className="text-slate-100 font-semibold">{req?.checkIn} → {req?.checkOut} • {nights} gece</p>
+                  </div>
 
-              {mapUrl ? (
-                <p className="text-[0.75rem] text-sky-300">
-                  <a href={mapUrl} target="_blank" rel="noreferrer" className="hover:underline">Haritada konumu gör</a>
-                </p>
-              ) : null}
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                    <p className="text-[0.72rem] text-slate-400">Kişi / Oda</p>
+                    <p className="text-slate-100 font-semibold">
+                      {reqAny.adults ?? "-"} yetişkin • {reqAny.childrenCount ?? 0} çocuk • {reqAny.roomsCount ?? 1} oda
+                    </p>
+                    {reqChildrenAges.length ? (
+                      <p className="text-[0.75rem] text-slate-300 mt-1">Çocuk yaşları: {reqChildrenAges.join(", ")}</p>
+                    ) : null}
+                  </div>
 
-              {hp?.description ? (
-                <p className="text-[0.75rem] text-slate-300">
-                  <span className="text-slate-400">Otel hakkında: </span>{hp.description}
-                </p>
-              ) : null}
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                    <p className="text-[0.72rem] text-slate-400">Pansiyon</p>
+                    <p className="text-slate-100 font-semibold">{reqBoardType || "—"}</p>
+                  </div>
 
-              {cancelText ? (
-                <p className="text-[0.75rem] text-slate-300">
-                  <span className="text-slate-400">İptal: </span>{cancelText}
-                </p>
-              ) : null}
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                    <p className="text-[0.72rem] text-slate-400">İstenen yıldız</p>
+                    <p className="text-slate-100 font-semibold">
+                      {reqDesiredStars.length ? reqDesiredStars.join(", ") + "★" : "—"}
+                    </p>
+                  </div>
+                </div>
 
-              {paymentText ? (
-                <p className="text-[0.75rem] text-slate-300">
-                  <span className="text-slate-400">Ödeme: </span>{paymentText}
-                </p>
-              ) : null}
+                {(reqHotelFeaturePrefs.length || reqFeatureKeys.length || reqHotelFeatureNote) ? (
+                  <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                    <p className="text-[0.72rem] text-slate-400 mb-1">İstekler / Tercihler</p>
 
-              <p className="text-[0.72rem] text-slate-500">
-                Bu ekran kanıt niteliğinde: oda kırılımı, fiyat geçmişi ve tesis bilgisi burada saklanır.
-              </p>
+                    {reqHotelFeaturePrefs.length ? (
+                      <p className="text-[0.78rem] text-slate-200">
+                        Otel tercihleri: <span className="text-slate-300">{reqHotelFeaturePrefs.join(", ")}</span>
+                      </p>
+                    ) : null}
+
+                    {reqFeatureKeys.length ? (
+                      <p className="text-[0.78rem] text-slate-200 mt-1">
+                        Özellik anahtarları: <span className="text-slate-300">{reqFeatureKeys.join(", ")}</span>
+                      </p>
+                    ) : null}
+
+                    {reqHotelFeatureNote ? (
+                      <p className="text-[0.78rem] text-slate-200 mt-1">
+                        Not: <span className="text-slate-300">{reqHotelFeatureNote}</span>
+                      </p>
+                    ) : null}
+
+                    {reqResponseTimeUnit ? (
+                      <p className="text-[0.75rem] text-slate-500 mt-2">
+                        Teklif cevap süresi birimi: {reqResponseTimeUnit}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
 
-          <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-950/90 p-3">
+          {/* ✅ Fiyat & oda kırılımı */}
+          <div className="space-y-2 rounded-2xl border border-slate-800 bg-slate-950/90 p-4">
             <p className="text-slate-400 text-[0.75rem] mb-0.5">Fiyat & oda kırılımı</p>
             <p className="text-slate-100">
-              <span className="font-semibold">{money(offer.totalPrice, offer.currency)}</span> • {MODE_LABEL_PUBLIC[offer.mode]}
+              <span className="text-lg font-extrabold text-emerald-300">{money(offer.totalPrice, offer.currency)}</span>{" "}
+              <span className="text-[0.8rem] text-slate-300">• {MODE_LABEL_PUBLIC[offer.mode]}</span>
             </p>
 
             {offer.note ? (
-              <p className="text-[0.75rem] text-slate-300"><span className="text-slate-400">Otel notu: </span>{offer.note}</p>
+              <p className="text-[0.78rem] text-slate-300"><span className="text-slate-400">Otel notu: </span>{offer.note}</p>
             ) : null}
 
             {breakdown.length > 0 ? (
-              <div className="mt-2 space-y-1">
+              <div className="mt-2 space-y-2">
                 {breakdown.map((rb, idx) => {
                   const n = rb.nights ?? nights;
                   const nightly = rb.nightlyPrice ?? 0;
@@ -2055,71 +2270,92 @@ function OfferDetailModal({
                   const label = rb.roomTypeName || rtProfile?.name || `Oda ${idx + 1}`;
 
                   return (
-                    <p key={idx} className="text-[0.75rem] text-slate-300">
-                      Oda {idx + 1}:{" "}
-                      {rtProfile ? (
-                        <button
-                          type="button"
-                          onClick={() => { setRoomModalRoom(rtProfile); setRoomModalOpen(true); }}
-                          className="underline underline-offset-2 hover:text-emerald-300"
-                        >
-                          {label}
-                        </button>
-                      ) : (
-                        <span>{label}</span>
-                      )}{" "}
-                      • {n} gece × {nightly.toLocaleString("tr-TR")} {offer.currency} ={" "}
-                      <span className="font-semibold text-emerald-300">{money(total, offer.currency)}</span>
-                    </p>
+                    <div key={idx} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-slate-100 text-[0.95rem] font-extrabold">
+                            Oda {idx + 1}:{" "}
+                            {rtProfile ? (
+                              <button
+                                type="button"
+                                onClick={() => { setRoomModalRoom(rtProfile); setRoomModalOpen(true); }}
+                                className="underline underline-offset-2 hover:text-emerald-300"
+                                title="Oda detayını gör"
+                              >
+                                {label}
+                              </button>
+                            ) : (
+                              <span className="font-extrabold">{label}</span>
+                            )}
+                          </p>
+
+                          <p className="text-[0.78rem] text-slate-300 mt-1">
+                            {n} gece × {nightly.toLocaleString("tr-TR")} {offer.currency}
+                          </p>
+                        </div>
+
+                        <div className="text-right">
+                          <p className="text-[0.72rem] text-slate-400">Toplam</p>
+                          <p className="text-emerald-300 text-base font-extrabold">{money(total, offer.currency)}</p>
+                        </div>
+                      </div>
+                    </div>
                   );
                 })}
               </div>
             ) : (
-              <p className="text-[0.75rem] text-slate-400">Oda kırılımı yok. Toplam tutar tek kalem.</p>
+              <p className="text-[0.78rem] text-slate-400">Oda kırılımı yok. Toplam tutar tek kalem.</p>
             )}
           </div>
 
-          {profileRoom ? (
-            <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-950/90 p-3">
-              <p className="text-slate-400 text-[0.75rem] mb-0.5">Teklifin referans oda tipi</p>
-              <button
-                type="button"
-                onClick={() => { setRoomModalRoom(profileRoom); setRoomModalOpen(true); }}
-                className="text-slate-100 font-semibold underline underline-offset-2 hover:text-emerald-300"
-              >
-                {profileRoom.name}
-              </button>
-              {profileRoom.shortDescription ? <p className="text-[0.75rem] text-slate-300">{profileRoom.shortDescription}</p> : null}
-            </div>
-          ) : null}
-
+          {/* ✅ Fiyat geçmişi (pazarlık detay) */}
           {histSorted.length > 0 ? (
-            <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-950/90 p-3">
-              <p className="text-slate-400 text-[0.75rem] mb-0.5">Fiyat geçmişi</p>
-              <div className="space-y-2">
-                {histSorted.slice(-8).map((h: any, i: number) => {
+            <div className="space-y-2 rounded-2xl border border-slate-800 bg-slate-950/90 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-slate-100 font-semibold text-[0.9rem]">Fiyat geçmişi / Pazarlık</p>
+                <p className="text-[0.75rem] text-slate-400">
+                  Adım: <span className="text-slate-200 font-semibold">{histSorted.length}</span>
+                </p>
+              </div>
+
+              <div className="grid md:grid-cols-3 gap-2">
+                <MiniStat title="Başlangıç (otel)" value={money(firstHotel, offer.currency)} />
+                <MiniStat title="En düşük (otel)" value={minHotel != null ? money(minHotel, offer.currency) : "—"} />
+                <MiniStat title="Son fiyat" value={money(lastPrice, offer.currency)} />
+              </div>
+
+              <div className="mt-2 space-y-2">
+                {histSorted.slice(-10).map((h: any, i: number) => {
                   const t = h?.createdAt?.toDate?.() ? h.createdAt.toDate().toLocaleString("tr-TR") : "";
                   const who = h.actor === "hotel" ? "Otel" : "Sen";
                   const kind = h.kind === "initial" ? "İlk fiyat" : h.kind === "update" ? "Güncelleme" : "Karşı teklif";
+
                   return (
                     <div key={i} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                      <div className="flex items-center justify-between">
-                        <div className="text-slate-100 font-semibold">{who} • {kind}</div>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-slate-100 font-semibold">
+                          {who} • <span className="text-slate-300">{kind}</span>
+                        </div>
                         <div className="text-emerald-300 font-extrabold">{money(h.price, offer.currency)}</div>
                       </div>
-                      <div className="text-[0.7rem] text-slate-500">{t}</div>
-                      {h.note ? <div className="text-[0.75rem] text-slate-300 mt-1">{h.note}</div> : null}
+                      <div className="text-[0.7rem] text-slate-500 mt-1">{t}</div>
+                      {h.note ? <div className="text-[0.78rem] text-slate-300 mt-2">{h.note}</div> : null}
                     </div>
                   );
                 })}
               </div>
             </div>
-          ) : null}
+          ) : (
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 text-slate-400 text-[0.85rem]">
+              Fiyat geçmişi yok. Bu teklif tek fiyatla verilmiş.
+            </div>
+          )}
 
+          {/* Video (opsiyonel) */}
           {hp?.youtubeUrl ? (
-            <div className="space-y-1 rounded-xl border border-slate-800 bg-slate-950/90 p-3">
-              <p className="text-slate-400 text-[0.75rem] mb-0.5">Tesis tanıtım videosu</p>
-              <div className="aspect-video rounded-lg overflow-hidden border border-slate-800">
+            <div className="space-y-2 rounded-2xl border border-slate-800 bg-slate-950/90 p-4">
+              <p className="text-slate-100 font-semibold text-[0.9rem]">Otel tanıtım videosu</p>
+              <div className="aspect-video rounded-xl overflow-hidden border border-slate-800">
                 <iframe
                   className="w-full h-full"
                   src={hp.youtubeUrl.replace("watch?v=", "embed/")}
@@ -2133,6 +2369,24 @@ function OfferDetailModal({
         </div>
       </div>
 
+      {/* ✅ Lightbox */}
+      {imgOpen && imgSrc ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80">
+          <button className="absolute inset-0" onClick={closeImage} aria-label="Kapat" />
+          <div className="relative max-w-5xl w-[92vw]">
+            <button
+              type="button"
+              onClick={closeImage}
+              className="absolute -top-10 right-0 rounded-md border border-white/20 bg-black/40 px-3 py-2 text-sm text-white hover:bg-black/60"
+            >
+              Kapat ✕
+            </button>
+            <img src={imgSrc} alt="Büyük görsel" className="w-full max-h-[78vh] object-contain rounded-xl border border-white/10" />
+          </div>
+        </div>
+      ) : null}
+
+      {/* Room modal */}
       {roomModalOpen && roomModalRoom ? (
         <RoomTypeModal
           room={roomModalRoom}
@@ -2143,58 +2397,15 @@ function OfferDetailModal({
   );
 }
 
-function RoomTypeModal({ room, onClose }: { room: RoomTypeProfile; onClose: () => void }) {
-  const images = room.imageUrls ?? [];
-  const [active, setActive] = useState(0);
-
+function MiniStat({ title, value }: { title: string; value: string }) {
   return (
-    <div className="fixed inset-0 z-[60] flex items-start justify-center bg-black/70">
-      <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
-      <div className="relative mt-16 w-full max-w-2xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-xl shadow-slate-950/60 max-h-[80vh] overflow-y-auto text-[0.8rem] space-y-4">
-        <div className="flex items-start justify-between gap-4 mb-2">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-100">{room.name}</h2>
-            {room.shortDescription ? <p className="text-[0.75rem] text-slate-300">{room.shortDescription}</p> : null}
-          </div>
-          <button type="button" onClick={onClose} className="rounded-full border border-slate-700 bg-slate-900 px-3 py-2 text-[0.75rem] text-slate-300 hover:border-emerald-400">
-            Kapat ✕
-          </button>
-        </div>
-
-        <div className="rounded-xl border border-slate-800 bg-slate-900/80 overflow-hidden flex flex-col">
-          {images.length > 0 ? (
-            <>
-              <div className="flex-1 overflow-hidden min-h-[180px]">
-                <img src={images[active]} alt={`${room.name} görseli`} className="w-full h-full object-cover" />
-              </div>
-              {images.length > 1 ? (
-                <div className="flex gap-1 p-1 bg-slate-950/80 border-t border-slate-800 overflow-x-auto">
-                  {images.map((img, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => setActive(idx)}
-                      className={`w-16 h-16 rounded-md border overflow-hidden ${active === idx ? "border-emerald-400" : "border-slate-700"}`}
-                    >
-                      <img src={img} alt={`${room.name} ${idx + 1}`} className="w-full h-full object-cover" />
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </>
-          ) : (
-            <div className="flex flex-col items-center justify-center text-slate-500 text-xs flex-1 min-h-[180px]">
-              <span className="text-2xl mb-1">🛏️</span>
-              <span>Bu oda tipi için henüz görsel eklenmemiş.</span>
-            </div>
-          )}
-        </div>
-
-        {room.description ? <p className="text-[0.75rem] text-slate-300 whitespace-pre-wrap">{room.description}</p> : null}
-      </div>
+    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+      <p className="text-[0.7rem] text-slate-400">{title}</p>
+      <p className="text-slate-100 font-extrabold mt-1">{value}</p>
     </div>
   );
 }
+
 
 /* -------------------- PAYMENT MODAL (HOTEL) -------------------- */
 function PaymentModal({
@@ -2421,13 +2632,22 @@ function PackageOffersModal({
           </div>
 
           <div className="flex flex-wrap gap-2 justify-end">
-            {st === "expired" ? (
-              <>
-                <button onClick={onRestart} className="rounded-md border border-emerald-500/70 px-3 py-2 text-[0.75rem] text-emerald-200 hover:bg-emerald-500/10">Yeniden başlat</button>
-                <button onClick={onEdit} className="rounded-md border border-sky-500/70 px-3 py-2 text-[0.75rem] text-sky-200 hover:bg-sky-500/10">Düzenle</button>
-                <button onClick={onDelete} className="rounded-md border border-red-500/70 px-3 py-2 text-[0.75rem] text-red-200 hover:bg-red-500/10">Sil</button>
-              </>
-            ) : null}
+          {st !== "accepted" ? (
+  <>
+    {st === "expired" && (
+      <button onClick={onRestart} className="rounded-md border border-emerald-500/70 px-3 py-2 text-[0.75rem] text-emerald-200 hover:bg-emerald-500/10">
+        Yeniden başlat
+      </button>
+    )}
+    <button onClick={onEdit} className="rounded-md border border-sky-500/70 px-3 py-2 text-[0.75rem] text-sky-200 hover:bg-sky-500/10">
+      Düzenle
+    </button>
+    <button onClick={onDelete} className="rounded-md border border-red-500/70 px-3 py-2 text-[0.75rem] text-red-200 hover:bg-red-500/10">
+      Sil
+    </button>
+  </>
+) : null}
+
 
             <button onClick={onClose} className="rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 text-[0.75rem] text-slate-200 hover:border-emerald-400">
               Kapat ✕
@@ -2767,4 +2987,117 @@ function PackagePaymentModal({
     </>
   );
 }
- 
+ function RoomTypeModal({
+  room,
+  onClose
+}: {
+  room: RoomTypeProfile;
+  onClose: () => void;
+}) {
+  const images = (room?.imageUrls ?? room?.images ?? room?.gallery ?? room?.photos ?? []).filter(Boolean);
+  const [active, setActive] = useState(0);
+
+  const [imgOpen, setImgOpen] = useState(false);
+  const [imgSrc, setImgSrc] = useState<string | null>(null);
+
+  const openImage = (src?: string | null) => {
+    if (!src) return;
+    setImgSrc(src);
+    setImgOpen(true);
+  };
+  const closeImage = () => {
+    setImgOpen(false);
+    setImgSrc(null);
+  };
+
+  return (
+    <>
+      <div className="fixed inset-0 z-[70] flex items-start justify-center bg-black/70">
+        <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
+        <div className="relative mt-14 w-full max-w-3xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-xl shadow-slate-950/60 max-h-[85vh] overflow-y-auto space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-base font-extrabold text-slate-100">{room?.name || "Oda tipi"}</h3>
+              {room?.shortDescription ? (
+                <p className="text-[0.8rem] text-slate-300 mt-1">{room.shortDescription}</p>
+              ) : null}
+            </div>
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:border-emerald-400"
+            >
+              Kapat ✕
+            </button>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/60 overflow-hidden">
+            {images.length ? (
+              <>
+                <button
+                  type="button"
+                  className="w-full h-64 relative group"
+                  onClick={() => openImage(images[active])}
+                  title="Büyütmek için tıkla"
+                >
+                  <img src={images[active]} alt="oda görseli" className="w-full h-full object-cover" />
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition" />
+                  <div className="absolute bottom-3 right-3 rounded-md border border-white/25 bg-black/40 px-2 py-1 text-[0.72rem] text-white">
+                    🔍 Büyüt
+                  </div>
+                </button>
+
+                {images.length > 1 ? (
+                  <div className="flex gap-2 p-2 bg-slate-950/80 border-t border-slate-800 overflow-x-auto">
+                    {images.slice(0, 14).map((img: string, idx: number) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => setActive(idx)}
+                        className={`w-16 h-16 rounded-lg border overflow-hidden ${
+                          active === idx ? "border-emerald-400" : "border-slate-700"
+                        }`}
+                      >
+                        <img src={img} alt={`thumb-${idx}`} className="w-full h-full object-cover" />
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <div className="h-64 flex items-center justify-center text-slate-500 text-sm">
+                Bu oda tipi için görsel yok.
+              </div>
+            )}
+          </div>
+
+          {room?.description ? (
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+              <p className="text-[0.75rem] text-slate-400 mb-1">Açıklama</p>
+              <p className="text-slate-100 text-sm whitespace-pre-wrap">{room.description}</p>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {/* Lightbox */}
+      {imgOpen && imgSrc ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80">
+          <button className="absolute inset-0" onClick={closeImage} aria-label="Kapat" />
+          <div className="relative max-w-5xl w-[92vw]">
+            <button
+              type="button"
+              onClick={closeImage}
+              className="absolute -top-10 right-0 rounded-md border border-white/20 bg-black/40 px-3 py-2 text-sm text-white hover:bg-black/60"
+            >
+              Kapat ✕
+            </button>
+            <img src={imgSrc} alt="Büyük oda görseli" className="w-full max-h-[78vh] object-contain rounded-xl border border-white/10" />
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
