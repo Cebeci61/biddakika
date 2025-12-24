@@ -219,6 +219,10 @@ type PackageRequest = {
 
   status?: string | null;
   createdAt?: Timestamp;
+
+    // ✅ TALEPLERİMDEN KALDIR
+  hiddenFromGuest?: boolean | null;
+  hiddenAt?: Timestamp | null;
 };
 
 type PackageOffer = {
@@ -555,6 +559,28 @@ export default function GuestOffersPage() {
     setCounterEditId(null);
     setCounterPrice("");
   }
+  async function hideAcceptedPackageFromGuest(p: any) {
+  const ok = window.confirm(
+    "Bu paket rezervasyonlara taşındı.\nTaleplerim sayfasından kaldırmak istiyor musun?"
+  );
+  if (!ok) return;
+
+  try {
+    await updateDoc(doc(db, "packageRequests", p.id), {
+      hiddenFromGuest: true,
+      hiddenAt: serverTimestamp()
+    });
+
+    // UI'dan kaldır
+    setPackageRequests((prev: any[]) =>
+      prev.filter((x) => x.id !== p.id)
+    );
+  } catch (e) {
+    console.error(e);
+    alert("Paket taleplerden kaldırılırken hata oluştu.");
+  }
+}
+
 
   async function handleCounterSubmit(e: FormEvent<HTMLFormElement>, offer: GuestOffer) {
     e.preventDefault();
@@ -1345,10 +1371,14 @@ if (snapPkg.empty) {
   }, [requestsMap, filteredOffers, acceptedRequestIds, now, qText, typeFilter, cityFilter, boostNegotiable, boostRefreshable]);
 
   // Paketleri ayır: kabul edilenler üstte
-  const pkgAcceptedList = useMemo(
-    () => packageRequests.filter((p) => (p.status ?? "") === "accepted" && !!p.bookingId),
-    [packageRequests]
-  );
+ const pkgAcceptedList = useMemo(
+  () =>
+    packageRequests.filter(
+      (p) => (p.status ?? "") === "accepted" && !!p.bookingId && (p.hiddenFromGuest ?? false) === false
+    ),
+  [packageRequests]
+);
+
   const pkgOpenList = useMemo(
     () => packageRequests.filter((p) => (p.status ?? "open") !== "accepted" && (p.status ?? "open") !== "deleted"),
     [packageRequests]
@@ -1500,6 +1530,7 @@ if (snapPkg.empty) {
                 <h3 className="text-sm font-semibold text-emerald-200">✅ Kabul edilen paketler</h3>
 
                 {pkgAcceptedList
+.filter((p) => (p.hiddenFromGuest ?? false) === false)
                   .filter((p) => (cityFilter === "all" ? true : p.city === cityFilter))
                   .filter((p) => {
                     const q = qText.trim().toLowerCase();
@@ -1535,6 +1566,14 @@ if (snapPkg.empty) {
                         >
                           Detay
                         </button>
+                        <button
+  type="button"
+  onClick={() => hideAcceptedPackageFromGuest(p)}
+  className="rounded-md border border-slate-600 px-4 py-2 text-[0.8rem] font-semibold text-slate-300 hover:bg-slate-800"
+>
+🗂️ Taleplerimden kaldır
+</button>
+
                       </div>
                     </div>
                   ))}
