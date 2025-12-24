@@ -455,6 +455,8 @@ export default function GuestBookingsPage() {
   const [minPrice, setMinPrice] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
   const [sortKey, setSortKey] = useState<"created_desc" | "checkin_asc" | "checkout_asc" | "price_desc">("created_desc");
+  const SHOW_RAW_DEBUG = false;
+
 
   // promo ticker
   const [tick, setTick] = useState(0);
@@ -1513,8 +1515,71 @@ function HotelVoucherModal({
 
   const voucherText = voucherLines.join("\n");
 
-  function handlePrint() {
-    const html = `
+function handlePrint() {
+  const isPackage =
+    String(booking.type || "").toLowerCase() === "package" ||
+    !!booking.packageRequestId ||
+    !!booking.packageOfferId ||
+    !!booking.agencySnapshot;
+
+  // ✅ doğrulama URL (prod için NEXT_PUBLIC_APP_URL önerilir)
+  const base =
+    (process.env.NEXT_PUBLIC_APP_URL as string) ||
+    (typeof window !== "undefined" ? window.location.origin : "");
+
+  const verifyUrl = `${base}/verify?voucher=1&bookingId=${encodeURIComponent(booking.id)}`;
+
+  // ✅ Logo: Paket -> acenta logosu; Otel -> otel logosu; yoksa Biddakika
+  const agency = booking.agencySnapshot || {};
+  const agencyLogo =
+    agency.logoUrl ||
+    agency.logo ||
+    agency.imageUrl ||
+    agency.photoUrl ||
+    null;
+
+  const hotelLogo =
+    booking.hotelRaw?.hotelProfile?.logoUrl ||
+    booking.hotelRaw?.hotelProfile?.logo ||
+    booking.hotelRaw?.logoUrl ||
+    null;
+
+  const logoUrl = (isPackage ? agencyLogo : hotelLogo) || null;
+
+  const issuerName = isPackage
+    ? (agency.businessName || agency.displayName || booking.agencySnapshot?.displayName || booking.bookingRaw?.agencyName || "Acenta")
+    : (booking.hotelName || "Tesis");
+
+  const docTitle = isPackage ? "Seyahat Belgesi (Paket Voucher)" : "Konaklama Voucherı (Otel)";
+
+  const issueDate = new Date().toLocaleString("tr-TR");
+
+  // ✅ Paket detaylarını “program” gibi çıkar
+  const pkgReq = booking.requestSnapshot || booking.bookingRaw?.requestSnapshot || booking.bookingRaw?.packageRequestSnapshot || {};
+  const pkgOff = booking.offerSnapshot || booking.bookingRaw?.offerSnapshot || booking.bookingRaw?.packageOfferSnapshot || {};
+  const pkgDetails = booking.packageDetails || booking.bookingRaw?.packageDetails || pkgOff.packageDetails || {};
+
+  const tourPlanArr = Array.isArray(pkgDetails.tourPlan) ? pkgDetails.tourPlan : [];
+  const transferType = pkgDetails.transferType || pkgDetails.transferPlan || booking.bookingRaw?.transferType || booking.bookingRaw?.transferNotes || "";
+  const carPlan = pkgDetails.carPlan || booking.bookingRaw?.carPlan || "";
+  const extrasPlan = pkgDetails.extrasPlan || booking.bookingRaw?.extrasPlan || "";
+  const boardType = pkgDetails.boardType || pkgOff?.packageDetails?.boardType || booking.bookingRaw?.boardPref || booking.bookingRaw?.boardType || "";
+  const roomType = pkgDetails.roomType || pkgOff?.packageDetails?.roomType || booking.bookingRaw?.roomTypePref || "";
+
+  const guestFullName = safeStr(guestProfile?.displayName || booking.guestName);
+  const guestEmail = safeStr(guestProfile?.email);
+
+  // ✅ QR resmi (Google Chart)
+  const qrImg = `https://chart.googleapis.com/chart?cht=qr&chs=180x180&chl=${encodeURIComponent(verifyUrl)}&chld=L|1`;
+
+  // ✅ Paket mi otel mi: ana satırlar
+  const mainLineLeft = isPackage
+    ? `${safeStr(booking.title || booking.bookingRaw?.title || pkgReq.title || "Paket")} • ${safeStr(booking.city || booking.bookingRaw?.city || pkgReq.city)}`
+    : `${safeStr(booking.hotelName)} • ${safeStr(booking.hotelCity || booking.city)}${booking.hotelDistrict ? " / " + booking.hotelDistrict : ""}`;
+const agencySnap = (booking.agencySnapshot || booking.bookingRaw?.agencySnapshot || {}) as any;
+
+  // ✅ PDF HTML (resmi belge hissi)
+  const html = `
 <!doctype html>
 <html>
 <head>
@@ -1522,80 +1587,236 @@ function HotelVoucherModal({
 <title>Voucher - ${booking.id}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
-  body{font-family:'Space Grotesk', Arial, sans-serif; padding:28px; color:#0b1220; background:#f6f7fb}
-  .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
-  .brand{font-weight:800;color:#059669;font-size:18px}
-  .badge{padding:6px 10px;border-radius:10px;font-weight:700;font-size:12px;background:#e8fff3;color:#065f46;border:1px solid #b7f3d3}
-  .badge2{padding:6px 10px;border-radius:10px;font-weight:700;font-size:12px;background:#fff7ed;color:#92400e;border:1px solid #fed7aa}
-  .wrap{background:#fff;border-radius:16px;border:1px solid #e6e8f0;box-shadow:0 10px 30px rgba(14,23,55,.08);overflow:hidden}
-  .hero{padding:16px 18px;background:linear-gradient(90deg,#0ea5e9,#22c55e);color:#fff}
-  .hero h1{margin:0;font-size:16px}
-  .hero .sub{opacity:.95;font-size:12px;margin-top:4px}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:16px 18px}
-  .card{border:1px solid #e6e8f0;border-radius:14px;padding:12px}
+  *{box-sizing:border-box}
+  body{font-family:Inter,Arial,sans-serif;margin:0;background:#f4f6fb;color:#0b1220}
+  .page{max-width:980px;margin:24px auto;padding:0 18px}
+  .paper{background:#fff;border:1px solid #e6e8f0;border-radius:18px;box-shadow:0 12px 30px rgba(14,23,55,.10);overflow:hidden;position:relative}
+  .watermark{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;opacity:.05;font-weight:800;font-size:64px;transform:rotate(-18deg)}
+  .topbar{padding:16px 18px;background:linear-gradient(90deg,#0ea5e9,#22c55e);color:#fff;display:flex;align-items:center;justify-content:space-between;gap:14px}
+  .brand{display:flex;align-items:center;gap:10px}
+  .brand .logo{width:42px;height:42px;border-radius:12px;background:rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;overflow:hidden;border:1px solid rgba(255,255,255,.25)}
+  .brand .logo img{width:100%;height:100%;object-fit:cover}
+  .brand h1{margin:0;font-size:16px;font-weight:800;letter-spacing:.2px}
+  .brand p{margin:2px 0 0;font-size:12px;opacity:.95}
+  .badgeRow{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
+  .badge{padding:7px 10px;border-radius:12px;font-size:12px;font-weight:800;border:1px solid rgba(255,255,255,.30);background:rgba(0,0,0,.18)}
+  .body{padding:16px 18px 18px}
+  .headgrid{display:grid;grid-template-columns:1.6fr .9fr;gap:12px}
+  .card{border:1px solid #e6e8f0;border-radius:16px;padding:12px}
   .label{font-size:11px;color:#64748b;margin:0 0 6px}
-  .val{margin:0;font-size:13px;font-weight:600}
-  pre{white-space:pre-wrap;font-size:11px;line-height:1.55;margin:0;padding:16px 18px;background:#0b1220;color:#e5e7eb}
-  .foot{padding:12px 18px;font-size:11px;color:#64748b}
+  .val{margin:0;font-size:13px;font-weight:700;line-height:1.35}
+  .muted{color:#64748b;font-size:12px}
+  .qrbox{display:flex;gap:12px;align-items:center}
+  .qrbox img{width:150px;height:150px;border:1px solid #e6e8f0;border-radius:14px;padding:8px}
+  .qrtext{font-size:12px;color:#334155}
+  .sectionTitle{margin:14px 0 8px;font-size:13px;font-weight:800;color:#0b1220}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  .line{height:1px;background:#e6e8f0;margin:14px 0}
+  .table{width:100%;border-collapse:separate;border-spacing:0}
+  .table th{font-size:11px;color:#64748b;text-align:left;padding:10px;border-bottom:1px solid #e6e8f0}
+  .table td{padding:10px;border-bottom:1px solid #f0f2f7;font-size:12px;color:#0b1220;vertical-align:top}
+  .pill{display:inline-block;padding:6px 10px;border-radius:999px;font-size:11px;font-weight:800;border:1px solid #dbeafe;background:#eff6ff;color:#1d4ed8}
+  .pill2{display:inline-block;padding:6px 10px;border-radius:999px;font-size:11px;font-weight:800;border:1px solid #bbf7d0;background:#ecfdf5;color:#065f46}
+  .siggrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  .sig{border:1px dashed #cbd5e1;border-radius:16px;padding:12px;height:92px;display:flex;flex-direction:column;justify-content:space-between}
+  .sig .who{font-size:11px;color:#64748b;font-weight:800}
+  .sig .line2{height:1px;background:#e6e8f0}
+  .foot{padding:12px 18px;background:#0b1220;color:#e5e7eb;font-size:11px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace}
 </style>
 </head>
+
 <body>
-  <div class="top">
-    <div class="brand">Biddakika</div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
-      <div class="${isPaidText(booking.paymentStatus) ? "badge" : "badge2"}">${safeStr(booking.paymentStatus)} • ${safeStr(paymentMethodText(String(booking.paymentMethod)))}</div>
-      <div class="badge">Voucher / Kanıt</div>
-    </div>
-  </div>
+  <div class="page">
+    <div class="paper">
+      <div class="watermark">BIDDAKIKA</div>
 
-  <div class="wrap">
-    <div class="hero">
-      <h1>Otel Rezervasyon Voucherı / Kanıt Dosyası</h1>
-      <div class="sub">Rezervasyon No: ${booking.id} • ${safeStr(booking.hotelName)}</div>
-    </div>
+      <div class="topbar">
+        <div class="brand">
+          <div class="logo">
+            ${logoUrl ? `<img src="${logoUrl}" alt="logo" onerror="this.style.display='none'">` : "🧾"}
+          </div>
+          <div>
+            <h1>${docTitle}</h1>
+            <p>${mainLineLeft}</p>
+          </div>
+        </div>
 
-    <div class="grid">
-      <div class="card">
-        <p class="label">Konaklama</p>
-        <p class="val">${safeStr(booking.checkIn)} – ${safeStr(booking.checkOut)} (${nights} gece)</p>
+        <div class="badgeRow">
+          <div class="badge">Belge No: <span class="mono">${booking.id}</span></div>
+          <div class="badge">Düzenleyen: ${issuerName}</div>
+          <div class="badge">Tarih: ${issueDate}</div>
+        </div>
       </div>
-      <div class="card">
-        <p class="label">Toplam</p>
-        <p class="val">${Number(booking.totalPrice||0).toLocaleString("tr-TR")} ${safeStr(booking.currency,"TRY")}</p>
+
+      <div class="body">
+        <div class="headgrid">
+          <div class="card">
+            <p class="label">Misafir</p>
+            <p class="val">${guestFullName}</p>
+            <p class="muted">${guestEmail}</p>
+
+            <div class="line"></div>
+
+            <p class="label">Konaklama / Seyahat Tarihi</p>
+            <p class="val">${safeStr(booking.checkIn)} – ${safeStr(booking.checkOut)} (${nights} gece)</p>
+            <p class="muted">Kişi: ${(booking.adults ?? booking.bookingRaw?.paxAdults ?? 0) + (booking.childrenCount ?? booking.bookingRaw?.paxChildren ?? 0)} • Oda: ${safeStr(booking.roomsCount || booking.bookingRaw?.roomsCount, "—")}</p>
+          </div>
+
+          <div class="card">
+            <p class="label">Doğrulama / QR</p>
+            <div class="qrbox">
+              <img src="${qrImg}" alt="qr">
+              <div class="qrtext">
+                <div><b>Doğrulama Linki</b></div>
+                <div class="mono" style="word-break:break-all">${verifyUrl}</div>
+                <div style="margin-top:8px" class="muted">
+                  Bu QR, belgenin doğrulanması içindir.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="line"></div>
+
+        <div class="grid3">
+          <div class="card">
+            <p class="label">Ödeme</p>
+            <p class="val">${Number(booking.totalPrice || 0).toLocaleString("tr-TR")} ${safeStr(booking.currency, "TRY")}</p>
+            <p class="muted">Yöntem: ${safeStr(booking.paymentMethod)}</p>
+            <p class="muted">Durum: ${safeStr(booking.paymentStatus)}</p>
+            <div style="margin-top:8px">
+              <span class="${isPaidText(booking.paymentStatus) ? "pill2" : "pill"}">
+                ${isPaidText(booking.paymentStatus) ? "ÖDEME ONAYLI" : "ÖDEME BEKLENİYOR"}
+              </span>
+            </div>
+          </div>
+
+          <div class="card">
+            <p class="label">${isPackage ? "Acenta" : "Tesis"} bilgisi</p>
+            <p class="val">${issuerName}</p>
+<p class="muted">${
+  isPackage
+? safeStr(booking.agencySnapshot?.phone || booking.bookingRaw?.agencySnapshot?.phone || "—")
+    : safeStr(booking.hotelPhone || "—")
+}</p>
+            <p class="muted">${isPackage ? (agency.address || "—") : (booking.hotelAddress || "—")}</p>
+          </div>
+
+          <div class="card">
+            <p class="label">Notlar</p>
+            <p class="muted">${safeStr(booking.offerNote || booking.bookingRaw?.offerNote || pkgOff.note || booking.bookingRaw?.note || "—")}</p>
+          </div>
+        </div>
+
+        <div class="sectionTitle">${isPackage ? "Paket Programı ve Hizmetler" : "Konaklama Detayı"}</div>
+
+        <div class="card">
+          ${isPackage ? `
+            <table class="table">
+              <tr>
+                <th style="width:34%">Başlık</th>
+                <th>Detay</th>
+              </tr>
+              <tr>
+                <td><b>Paket Adı</b></td>
+                <td>${safeStr(booking.title || booking.bookingRaw?.title || pkgReq.title)}</td>
+              </tr>
+              <tr>
+                <td><b>Otel</b></td>
+                <td>${safeStr(pkgDetails?.hotelName || pkgOff?.packageDetails?.hotelName || "—")}
+</td>
+              </tr>
+              <tr>
+                <td><b>Oda / Pansiyon</b></td>
+                <td>${safeStr(roomType || "—")} • ${safeStr(boardType || "—")}</td>
+              </tr>
+              <tr>
+                <td><b>Transfer</b></td>
+                <td>${safeStr(transferType || booking.bookingRaw?.transferType || "—")} • ${safeStr(booking.bookingRaw?.transferNotes || pkgReq.transferNotes || "—")}</td>
+              </tr>
+              <tr>
+               <td>${
+  Array.isArray(tourPlanArr) && tourPlanArr.length
+    ? tourPlanArr.map((x) => `• ${String(x)}`).join("<br>")
+    : "—"
+}</td>
+
+              </tr>
+              <tr>
+                <td><b>Araç</b></td>
+                <td>${safeStr(carPlan || booking.bookingRaw?.carType || "—")}</td>
+              </tr>
+              <tr>
+                <td><b>Ekstralar</b></td>
+                <td>${safeStr(extrasPlan || booking.bookingRaw?.rentalExtras || booking.bookingRaw?.extras || "—")}</td>
+              </tr>
+            </table>
+          ` : `
+            <table class="table">
+              <tr>
+                <th style="width:34%">Başlık</th>
+                <th>Detay</th>
+              </tr>
+              <tr>
+                <td><b>Tesis</b></td>
+                <td>${safeStr(booking.hotelName)}</td>
+              </tr>
+              <tr>
+                <td><b>Adres</b></td>
+                <td>${safeStr(booking.hotelAddress)}</td>
+              </tr>
+              <tr>
+                <td><b>Kişi / Oda</b></td>
+                <td>${safeStr(booking.adults, "0")} yetişkin • ${safeStr(booking.childrenCount, "0")} çocuk • ${safeStr(booking.roomsCount, "1")} oda</td>
+              </tr>
+            </table>
+          `}
+        </div>
+
+        <div class="sectionTitle">İmza / Kaşe</div>
+        <div class="siggrid">
+          <div class="sig">
+            <div class="who">${isPackage ? "Acenta Yetkilisi" : "Tesis Yetkilisi"}</div>
+            <div class="line2"></div>
+            <div class="muted">İmza / Kaşe</div>
+          </div>
+          <div class="sig">
+            <div class="who">Misafir</div>
+            <div class="line2"></div>
+            <div class="muted">İmza</div>
+          </div>
+          <div class="sig">
+            <div class="who">Biddakika</div>
+            <div class="line2"></div>
+            <div class="muted">Sistem Onayı</div>
+          </div>
+        </div>
       </div>
-      <div class="card">
-        <p class="label">Kişi / Oda</p>
-        <p class="val">${(booking.adults ?? 0) + (booking.childrenCount ?? 0)} kişi • ${booking.roomsCount || 1} oda</p>
-      </div>
-      <div class="card">
-        <p class="label">İletişim</p>
-        <p class="val">${safeStr(booking.hotelPhone,"")} ${booking.hotelEmail ? " • " + booking.hotelEmail : ""}</p>
-      </div>
-      <div class="card">
-        <p class="label">Adres</p>
-        <p class="val">${safeStr(booking.hotelAddress)}</p>
-      </div>
-      <div class="card">
-        <p class="label">İptal</p>
-        <p class="val">${safeStr(cancelText)}</p>
+
+      <div class="foot">
+        <div>Bu belge Biddakika tarafından üretilmiştir. Doğrulama için QR kullanın.</div>
+        <div class="mono">Belge No: ${booking.id}</div>
       </div>
     </div>
-
-    <pre>${voucherText.replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")}</pre>
-    <div class="foot">Bu belge Biddakika tarafından oluşturulmuştur. İyi tatiller dileriz.</div>
   </div>
 
   <script>window.print();</script>
 </body>
-</html>`;
-    const w = window.open("", "_blank", "width=980,height=900");
-    if (!w) return;
-    w.document.open();
-    w.document.write(html);
-    w.document.close();
-  }
+</html>
+`;
+
+  const w = window.open("", "_blank", "width=1100,height=900");
+  if (!w) return;
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+}
+
 
   async function handleCopy() {
     try {
@@ -1790,15 +2011,7 @@ function HotelVoucherModal({
           </div>
         </div>
 
-        <details className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-          <summary className="cursor-pointer text-[0.8rem] text-slate-200 font-semibold">Ham veriler (kanıt / debug)</summary>
-          <pre className="mt-3 whitespace-pre-wrap text-[11px] text-slate-300 overflow-x-auto">{prettyJSON({
-            bookingRaw: booking.bookingRaw,
-            requestRaw: booking.requestRaw,
-            offerRaw: booking.offerRaw,
-            hotelRaw: booking.hotelRaw
-          })}</pre>
-        </details>
+       
 
         <p className="text-[0.7rem] text-slate-500">Bu voucher, rezervasyon doğrulaması için tüm detayları tek dosyada saklar.</p>
       </div>
@@ -1904,6 +2117,40 @@ function PackageVoucherModal({ booking, guestProfile, onClose }: { booking: Book
   const programText = programLines.join("\n");
 
   function handlePrint() {
+    // ✅ Paket mi?
+  const isPackage =
+    String(booking.type || booking.bookingRaw?.type || "").toLowerCase() === "package" ||
+    !!booking.packageRequestId ||
+    !!booking.packageOfferId;
+
+  // ✅ Paket kaynakları (tek yerden oku)
+  const pkgReq = (booking.requestSnapshot || booking.bookingRaw?.requestSnapshot || booking.bookingRaw) as any; // talep snapshot / raw
+  const pkgOff = (booking.offerSnapshot || booking.bookingRaw?.offerSnapshot || booking.bookingRaw) as any; // teklif snapshot / raw
+
+  // ✅ acenta snapshot (kırmızı çizgiyi bitirir)
+  const agencySnap = (booking.agencySnapshot ||
+    booking.bookingRaw?.agencySnapshot ||
+    pkgOff?.agencySnapshot ||
+    {}) as any;
+
+  // ✅ Paket detayları (kırmızı çizgiyi bitirir)
+  const pkgDetails = (booking.packageDetails ||
+    booking.bookingRaw?.packageDetails ||
+    pkgOff?.packageDetails ||
+    {}) as any;
+
+  // ✅ Acenta bilgileri fallback
+  const agencyName =
+    agencySnap?.businessName ||
+    agencySnap?.displayName ||
+    booking.bookingRaw?.agencyName ||
+    booking.bookingRaw?.agencyDisplayName ||
+    booking.agencySnapshot?.displayName ||
+    "Acenta";
+
+  const agencyPhone = agencySnap?.phone || agencySnap?.whatsapp || agencySnap?.contactPhone || "";
+  const agencyAddress = agencySnap?.address || "";
+
     const pay = paymentBadge(booking.paymentStatus);
     const html = `
 <!doctype html>
@@ -2060,16 +2307,7 @@ function PackageVoucherModal({ booking, guestProfile, onClose }: { booking: Book
           <pre className="text-slate-100 text-sm whitespace-pre-wrap">{programText}</pre>
         </div>
 
-        {/* Ham snapshotlar (isteğe bağlı) */}
-        <details className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-          <summary className="cursor-pointer text-[0.8rem] text-slate-200 font-semibold">Ham veriler (talep + teklif + acenta)</summary>
-          <pre className="mt-3 whitespace-pre-wrap text-[11px] text-slate-300 overflow-x-auto">{prettyJSON({
-            bookingRaw: booking.bookingRaw,
-            requestSnapshot: rawReq,
-            offerSnapshot: rawOffer,
-            agencySnapshot: agency
-          })}</pre>
-        </details>
+       
 
         <p className="text-[0.7rem] text-slate-500">
           Bu belge “paket rezervasyon kanıt dosyasıdır”. Misafir talebi + acenta teklifi + program burada saklanır.
