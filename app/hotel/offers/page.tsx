@@ -699,8 +699,6 @@ function OfferDetailModal({
   onClose: () => void;
 }) {
   const offerAny = offer as any;
-
-  // 🔥 Modal açılınca “tam talep dokümanı” + “otel profil oda tipleri” çekiyoruz
   const db = getFirestoreDb();
 
   const [fullReq, setFullReq] = useState<any | null>(request ?? null);
@@ -712,11 +710,17 @@ function OfferDetailModal({
   const [roomModalOpen, setRoomModalOpen] = useState(false);
   const [activeRoomProfile, setActiveRoomProfile] = useState<any | null>(null);
 
-  // ---- helpers ----
+  /* ---------------- Helpers ---------------- */
+
   function safeStr(v: any, fallback = "Belirtilmemiş") {
     if (v === null || v === undefined) return fallback;
     const s = String(v).trim();
     return s.length ? s : fallback;
+  }
+
+  function safeNum(v: any, d = 0) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : d;
   }
 
   function toDateMaybe(ts: any): Date | null {
@@ -780,8 +784,7 @@ function OfferDetailModal({
     const d = o?.cancellationPolicyDays ?? 3;
     if (t === "non_refundable") return "İptal edilemez / iade yok.";
     if (t === "flexible") return "Giriş tarihine kadar ücretsiz iptal.";
-    if (t === "until_days_before")
-      return `Giriş tarihinden ${d} gün öncesine kadar ücretsiz iptal.`;
+    if (t === "until_days_before") return `Giriş tarihinden ${d} gün öncesine kadar ücretsiz iptal.`;
     return "Belirtilmemiş";
   }
 
@@ -789,18 +792,15 @@ function OfferDetailModal({
   function maskName(name?: string | null): string {
     if (!name) return "Misafir";
     const parts = String(name).split(" ").filter(Boolean);
-    return parts
-      .map((p) => p[0] + "*".repeat(Math.max(2, p.length - 1)))
-      .join(" ");
+    return parts.map((p) => p[0] + "*".repeat(Math.max(2, p.length - 1))).join(" ");
   }
   function maskEmail(email?: string | null): string {
     if (!email) return "Belirtilmemiş";
     const [user, domain] = String(email).split("@");
     if (!domain) return "Belirtilmemiş";
-    const maskedUser = user[0] + "*".repeat(Math.max(3, user.length - 1));
+    const maskedUser = user?.[0] + "*".repeat(Math.max(3, (user || "").length - 1));
     const [domainName, ext] = domain.split(".");
-    const maskedDomain =
-      domainName?.[0] + "*".repeat(Math.max(3, (domainName || "").length - 1));
+    const maskedDomain = domainName?.[0] + "*".repeat(Math.max(3, (domainName || "").length - 1));
     return `${maskedUser}@${maskedDomain}${ext ? "." + ext : ""}`;
   }
   function maskPhone(phone?: string | null): string {
@@ -809,12 +809,42 @@ function OfferDetailModal({
     const digits = s.replace(/\D/g, "");
     if (digits.length < 4) return "Belirtilmemiş";
     const last2 = digits.slice(-2);
-    const prefix = s.slice(0, 4); // +90  gibi
+    const prefix = s.slice(0, 4); // +90 gibi
     return `${prefix} ***** ${last2}`;
   }
 
-  // “rezervasyon onaylandı mı?”
+  // “rezervasyon onaylandı mı?” (KVKK kilidi)
   const isUnlocked = offer.status === "accepted";
+
+  // pick helper: farklı field adlarını tek yerde toplar
+  function pick(obj: any, keys: string[], fallback: any = null) {
+    for (const k of keys) {
+      const v = obj?.[k];
+      if (v !== undefined && v !== null && String(v).trim() !== "") return v;
+    }
+    return fallback;
+  }
+
+  function safeJSON(v: any) {
+    try {
+      return JSON.stringify(v, null, 2);
+    } catch {
+      return String(v);
+    }
+  }
+
+  function renderValue(v: any) {
+    if (v === null || v === undefined) return "—";
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return String(v);
+    if (Array.isArray(v)) {
+      if (!v.length) return "—";
+      if (v.every((x) => ["string", "number", "boolean"].includes(typeof x))) return v.join(" • ");
+      return v.map((x, i) => `${i + 1}) ${typeof x === "object" ? safeJSON(x) : String(x)}`).join("\n");
+    }
+    return safeJSON(v);
+  }
+
+  /* ---------------- Firestore loads ---------------- */
 
   // 🔥 Firestore’dan tam talep çek
   useEffect(() => {
@@ -823,16 +853,11 @@ function OfferDetailModal({
     async function loadFull() {
       try {
         setReqLoading(true);
-
-        // request prop zaten geldiyse onu baz al, ama “eksik alan” ihtimali var → yine de doc’u oku
         const snap = await getDoc(doc(db, "requests", offer.requestId));
         if (!alive) return;
 
-        if (snap.exists()) {
-          setFullReq({ id: snap.id, ...(snap.data() as any) });
-        } else {
-          setFullReq(request ?? null);
-        }
+        if (snap.exists()) setFullReq({ id: snap.id, ...(snap.data() as any) });
+        else setFullReq(request ?? null);
       } catch (e) {
         console.error("request load error:", e);
         if (alive) setFullReq(request ?? null);
@@ -845,9 +870,9 @@ function OfferDetailModal({
     return () => {
       alive = false;
     };
-  }, [db, offer.requestId]); // request değişse bile id ana belirleyici
+  }, [db, offer.requestId]);
 
-  // 🔥 Otelin roomTypes + görsellerini çek (oda modalı için)
+  // 🔥 Otelin roomTypes çek (oda modalı için)
   useEffect(() => {
     let alive = true;
 
@@ -877,82 +902,68 @@ function OfferDetailModal({
     return () => {
       alive = false;
     };
-  }, [db, offerAny.hotelId,]);
+  }, [db, offerAny.hotelId]);
 
   const reqAny = (fullReq || {}) as any;
 
-  // ✅ “Ad Soyad” kesin doğru olsun: contactName önce
-  const contactName =
-    reqAny.contactName ||
-    reqAny.guestName ||
-    reqAny.guestDisplayName ||
-    reqAny.guestDisplayNameName ||
-    reqAny.guestDisplayName ||
-    null;
+  /* ---------------- Normalized request fields (FULL) ---------------- */
 
-  const contactEmail = reqAny.contactEmail || reqAny.guestEmail || reqAny.email || null;
-
-  const contactPhone =
-    reqAny.contactPhone ||
-    reqAny.guestPhone ||
-    (reqAny.contactPhoneCountryCode && reqAny.contactPhoneLocal
-      ? `${reqAny.contactPhoneCountryCode} ${reqAny.contactPhoneLocal}`
-      : null) ||
-    null;
-
-  const contactPhone2 = reqAny.contactPhone2 || reqAny.guestPhone2 || null;
-
-  const company = reqAny.contactCompany || reqAny.company || null;
+  // Misafir iletişim (KVKK)
+  const contactName = pick(reqAny, ["contactName", "guestName", "contact?.name", "contact.name", "createdByName"], null);
+  const contactEmail = pick(reqAny, ["contactEmail", "guestEmail", "contact.email", "email", "createdByEmail"], null);
+  const contactPhone = pick(
+    reqAny,
+    ["contactPhone", "guestPhone", "contact.phone", "createdByPhone"],
+    (reqAny?.contactPhoneCountryCode && reqAny?.contactPhoneLocal) ? `${reqAny.contactPhoneCountryCode} ${reqAny.contactPhoneLocal}` : null
+  );
+  const contactPhone2 = pick(reqAny, ["contactPhone2", "guestPhone2"], null);
+  const company = pick(reqAny, ["contactCompany", "company"], null);
 
   const nameToShow = isUnlocked ? safeStr(contactName, "Misafir") : maskName(contactName);
   const emailToShow = isUnlocked ? safeStr(contactEmail) : maskEmail(contactEmail);
   const phoneToShow = isUnlocked ? safeStr(contactPhone) : maskPhone(contactPhone);
-  const phone2ToShow = contactPhone2
-    ? isUnlocked
-      ? safeStr(contactPhone2)
-      : maskPhone(contactPhone2)
-    : null;
-
+  const phone2ToShow = contactPhone2 ? (isUnlocked ? safeStr(contactPhone2) : maskPhone(contactPhone2)) : null;
   const companyToShow = isUnlocked ? safeStr(company) : maskName(company);
 
-  const adults = Number(reqAny.adults ?? 0);
-  const childrenCount = Number(reqAny.childrenCount ?? 0);
+  const city = pick(reqAny, ["city"], "Belirtilmemiş");
+  const district = pick(reqAny, ["district"], null);
+
+  const checkIn = pick(reqAny, ["checkIn", "checkInDate", "dateFrom"], null);
+  const checkOut = pick(reqAny, ["checkOut", "checkOutDate", "dateTo"], null);
+
+  const adults = safeNum(pick(reqAny, ["adults", "paxAdults"], 0), 0);
+  const childrenCount = safeNum(pick(reqAny, ["childrenCount", "paxChildren"], 0), 0);
+  const roomsCount = safeNum(pick(reqAny, ["roomsCount"], 1), 1);
   const totalGuests = adults + childrenCount;
 
   const childrenAges: any[] = Array.isArray(reqAny.childrenAges) ? reqAny.childrenAges : [];
-  const roomsCount = Number(reqAny.roomsCount ?? 1);
+  const nearMe = !!reqAny.nearMe;
+  const nearMeKm = pick(reqAny, ["nearMeKm"], null);
 
-  const checkIn = reqAny.checkIn || reqAny.checkInDate || null;
-  const checkOut = reqAny.checkOut || reqAny.checkOutDate || null;
-
-  // Talep alanları
   const boardTypes: any[] = Array.isArray(reqAny.boardTypes) ? reqAny.boardTypes : [];
-  const boardTypeSingle = reqAny.boardType || null;
-  const accommodationType = reqAny.accommodationType || reqAny.accommodationTypeKey || null;
+  const boardPref = pick(reqAny, ["boardPref", "boardType", "mealPlan"], null);
+
+  const accommodationType = pick(reqAny, ["accommodationType", "hotelType", "hotelPref"], null);
 
   const desiredStars: any[] = Array.isArray(reqAny.desiredStarRatings) ? reqAny.desiredStarRatings : [];
-  const starRating = reqAny.starRating || null;
+  const starRating = pick(reqAny, ["starRating", "starRatingPref"], null);
 
   const featureKeys: any[] = Array.isArray(reqAny.featureKeys) ? reqAny.featureKeys : [];
   const hotelFeaturePrefs: any[] = Array.isArray(reqAny.hotelFeaturePrefs) ? reqAny.hotelFeaturePrefs : [];
+  const extraFeaturesText = pick(reqAny, ["extraFeaturesText", "hotelFeatureNote", "hotelFeatureNoteText"], null);
 
-  const extraFeaturesText =
-    reqAny.extraFeaturesText || reqAny.hotelFeatureNote || reqAny.hotelFeatureNoteText || null;
+  const locationNote = pick(reqAny, ["locationNote"], null);
+  const generalNote = pick(reqAny, ["note", "notes", "generalNote"], null);
+  const contactNote = pick(reqAny, ["contactNote"], null);
 
-  const locationNote = reqAny.locationNote || null;
-  const generalNote = reqAny.note || null;
-  const contactNote = reqAny.contactNote || null;
-
-  // Oda tercihleri (her format)
+  // Oda tercihleri
   const roomTypesArr: any[] = Array.isArray(reqAny.roomTypes) ? reqAny.roomTypes : [];
   const roomTypeRows: any[] = Array.isArray(reqAny.roomTypeRows) ? reqAny.roomTypeRows : [];
-  const roomTypeCounts =
-    reqAny.roomTypeCounts && typeof reqAny.roomTypeCounts === "object" ? reqAny.roomTypeCounts : null;
+  const roomTypeCounts = (reqAny.roomTypeCounts && typeof reqAny.roomTypeCounts === "object") ? reqAny.roomTypeCounts : null;
 
-  // Oda kırılımı (teklif)
+  // Teklif oda kırılımı
   const roomBreakdown = Array.isArray(offerAny.roomBreakdown) ? offerAny.roomBreakdown : [];
 
-  // Oda profili bul
   function findRoomProfile(roomTypeId?: string | null, roomTypeName?: string | null) {
     if (!roomTypeId && !roomTypeName) return null;
 
@@ -961,9 +972,7 @@ function OfferDetailModal({
       if (hit) return hit;
     }
     if (roomTypeName) {
-      const hit = hotelRoomTypes.find(
-        (r) => String(r?.name || "").toLowerCase() === String(roomTypeName).toLowerCase()
-      );
+      const hit = hotelRoomTypes.find((r) => String(r?.name || "").toLowerCase() === String(roomTypeName).toLowerCase());
       if (hit) return hit;
     }
     return null;
@@ -990,51 +999,93 @@ function OfferDetailModal({
     setActiveRoomProfile(null);
   }
 
-  // Fiyat geçmişi: varsa priceHistory, yoksa sentetik
+  // Fiyat geçmişi
   const priceHistory: any[] = Array.isArray(offerAny.priceHistory) ? offerAny.priceHistory : [];
   const syntheticHistory: any[] = [
-    {
-      at: offerAny.createdAt,
-      by: "hotel",
-      label: "İlk teklif",
-      price: offerAny.totalPrice,
-      currency: offerAny.currency
-    }
+    { createdAt: offerAny.createdAt, actor: "hotel", kind: "initial", price: offerAny.totalPrice, note: offerAny.note ?? null }
   ];
   if (offerAny.guestCounterPrice) {
     syntheticHistory.push({
-      at: offerAny.guestCounterAt || offerAny.updatedAt || null,
-      by: "guest",
-      label: "Misafir karşı teklif",
+      createdAt: offerAny.guestCounterAt || offerAny.updatedAt || null,
+      actor: "guest",
+      kind: "counter",
       price: offerAny.guestCounterPrice,
-      currency: offerAny.currency
+      note: null
     });
   }
   if (offerAny.updatedAt && offerAny.updatedAt !== offerAny.createdAt) {
     syntheticHistory.push({
-      at: offerAny.updatedAt,
-      by: "hotel",
-      label: "Son güncelleme",
+      createdAt: offerAny.updatedAt,
+      actor: "hotel",
+      kind: "update",
       price: offerAny.totalPrice,
-      currency: offerAny.currency
+      note: offerAny.note ?? null
     });
   }
-  const historyToShow = priceHistory.length > 0 ? priceHistory : syntheticHistory;
+  const historyToShow = priceHistory.length ? priceHistory : syntheticHistory;
+
+  const historySorted = useMemo(() => {
+    const arr = [...historyToShow];
+    arr.sort((a, b) => (a?.createdAt?.toMillis?.() ?? toDateMaybe(a?.createdAt)?.getTime?.() ?? 0) - (b?.createdAt?.toMillis?.() ?? toDateMaybe(b?.createdAt)?.getTime?.() ?? 0));
+    return arr;
+  }, [historyToShow]);
 
   const createdStr = fmtDateTime(offerAny.createdAt);
   const updatedStr = offerAny.updatedAt ? fmtDateTime(offerAny.updatedAt) : "";
 
-  const commissionRate = commissionRateForMode(offer.mode);
+  // Oda eşleşmesi (misafir istedikleri vs otelin sunduğu)
+  const guestWantsRoomsText = (() => {
+    if (roomTypeRows.length) return roomTypeRows.map((r: any) => `${r?.typeKey ?? "oda"}: ${r?.count ?? 1}`).join(" • ");
+    if (roomTypeCounts) return Object.entries(roomTypeCounts).map(([k, v]: any) => `${k}: ${v}`).join(" • ");
+    if (roomTypesArr.length) return roomTypesArr.join(", ");
+    return "Farketmez";
+  })();
 
-  // ✅ “hiçbir alan boş kalmasın” için tek fallback fonksiyonu
-  const fill = (v: any, fb = "Belirtilmemiş") => safeStr(v, fb);
+  const hotelOffersRoomsText = (() => {
+    if (!roomBreakdown.length) return "Oda kırılımı yok";
+    return roomBreakdown.map((rb: any) => rb?.roomTypeName || rb?.roomTypeId || "Oda").join(", ");
+  })();
+
+  /* ---------------- UI ---------------- */
+
+  const topPairs: { k: string; v: any }[] = [
+    { k: "Başlık", v: reqAny?.title },
+    { k: "Şehir", v: reqAny?.city },
+    { k: "İlçe", v: reqAny?.district },
+    { k: "Check-in", v: checkIn },
+    { k: "Check-out", v: checkOut },
+    { k: "Yetişkin", v: adults },
+    { k: "Çocuk", v: childrenCount },
+    { k: "Çocuk yaşları", v: childrenAges },
+    { k: "Oda sayısı", v: roomsCount },
+    { k: "Board/Plan", v: boardTypes.length ? boardTypes : boardPref },
+    { k: "Tesis türü", v: accommodationType },
+    { k: "Yıldız", v: starRating || (desiredStars.length ? desiredStars.map((s: any) => `${s}★`).join(", ") : null) },
+    { k: "İstenen özellikler", v: featureKeys.length ? featureKeys : (hotelFeaturePrefs.length ? hotelFeaturePrefs : null) },
+    { k: "Ek özellik notu", v: extraFeaturesText },
+    { k: "Konum notu", v: locationNote },
+    { k: "Genel not", v: generalNote },
+    { k: "İletişim notu", v: contactNote },
+    { k: "Yakınımda", v: nearMe ? `Açık (${safeStr(nearMeKm, "—")} km)` : "Kapalı" }
+  ].filter((x) => x.v !== undefined);
+
+  const prettyReqJson = useMemo(() => {
+    try {
+      return JSON.stringify(reqAny, (_k, v) => {
+        if (v && typeof v === "object" && typeof (v as any).toDate === "function") return (v as any).toDate().toISOString();
+        return v;
+      }, 2);
+    } catch {
+      return safeJSON(reqAny);
+    }
+  }, [reqAny]);
 
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60">
         <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
 
-        <div className="relative mt-10 w-full max-w-3xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-xl shadow-slate-950/60 max-h-[85vh] overflow-y-auto text-[0.85rem] space-y-4">
+        <div className="relative mt-10 w-full max-w-4xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-xl shadow-slate-950/60 max-h-[85vh] overflow-y-auto text-[0.85rem] space-y-4">
           {/* HEADER */}
           <div className="flex items-start justify-between gap-3">
             <div className="space-y-1">
@@ -1042,7 +1093,7 @@ function OfferDetailModal({
                 <h2 className="text-sm font-semibold text-slate-100">Teklif Detayı</h2>
 
                 <span className="inline-flex items-center rounded-full border border-slate-700 bg-slate-900 px-2 py-0.5 text-[0.65rem] text-slate-300">
-                  {modeText(offer.mode)} • ~%{commissionRate}
+                  {modeText(offer.mode)}
                 </span>
 
                 <span
@@ -1061,33 +1112,19 @@ function OfferDetailModal({
 
                 {!isUnlocked && (
                   <span className="inline-flex items-center rounded-full border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-[0.65rem] text-amber-200">
-                    KVKK: Kimlik/iletişim maskeli
+                    KVKK: İletişim maskeli
                   </span>
                 )}
               </div>
 
               <p className="text-[0.7rem] text-slate-400">
-                Talep:{" "}
-                <span className="text-slate-200">{fill(offer.requestId).slice(0, 10)}…</span>{" "}
-                • Gönderim: <span className="text-slate-200">{createdStr}</span>
-                {updatedStr ? (
-                  <>
-                    {" "}
-                    • Son güncelleme: <span className="text-slate-200">{updatedStr}</span>
-                  </>
-                ) : null}
+                Talep ID: <span className="text-slate-200">{safeStr(offer.requestId).slice(0, 10)}…</span> • Gönderim:{" "}
+                <span className="text-slate-200">{createdStr}</span>
+                {updatedStr ? <> • Güncelleme: <span className="text-slate-200">{updatedStr}</span></> : null}
               </p>
 
-              {reqLoading && (
-                <p className="text-[0.7rem] text-slate-500">
-                  Talep detayları yükleniyor...
-                </p>
-              )}
-              {hotelLoading && (
-                <p className="text-[0.7rem] text-slate-500">
-                  Oda profilleri yükleniyor...
-                </p>
-              )}
+              {reqLoading && <p className="text-[0.7rem] text-slate-500">Talep detayları yükleniyor...</p>}
+              {hotelLoading && <p className="text-[0.7rem] text-slate-500">Oda profilleri yükleniyor...</p>}
             </div>
 
             <button
@@ -1099,17 +1136,17 @@ function OfferDetailModal({
             </button>
           </div>
 
-          {/* ÜST KARTLAR */}
+          {/* ÜST ÖZET KARTLAR */}
           <div className="grid gap-3 md:grid-cols-3">
             <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
               <p className="text-[0.7rem] text-slate-400">Toplam fiyat</p>
               <p className="text-slate-100 text-[0.95rem] font-semibold">
-                {fill(offer.totalPrice, "0")} {fill(offer.currency, "TRY")}
+                {safeNum(offerAny.totalPrice, 0).toLocaleString("tr-TR")} {safeStr(offerAny.currency, "TRY")}
               </p>
               <p className="mt-1 text-[0.75rem] text-slate-400">
                 Misafir karşı teklifi:{" "}
                 <span className="text-amber-300 font-semibold">
-                  {offerAny.guestCounterPrice ? `${offerAny.guestCounterPrice} ${offer.currency}` : "Yok"}
+                  {offerAny.guestCounterPrice ? `${offerAny.guestCounterPrice} ${safeStr(offerAny.currency, "TRY")}` : "Yok"}
                 </span>
               </p>
             </div>
@@ -1117,309 +1154,191 @@ function OfferDetailModal({
             <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
               <p className="text-[0.7rem] text-slate-400">İptal politikası</p>
               <p className="text-[0.8rem] text-slate-100">{cancelTextFromOffer(offerAny)}</p>
-              <p className="mt-1 text-[0.7rem] text-slate-500">
-                Bu teklif için kaydedildi.
-              </p>
+              <p className="mt-1 text-[0.7rem] text-slate-500">Teklife kayıtlıdır.</p>
             </div>
 
             <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
               <p className="text-[0.7rem] text-slate-400">Check-in’e kalan</p>
-              <p className="text-[0.85rem] font-semibold text-emerald-300">
-                {diffToCheckIn(checkIn)}
-              </p>
-              <p className="mt-1 text-[0.7rem] text-slate-500">
-                (Giriş tarihine göre)
-              </p>
+              <p className="text-[0.85rem] font-semibold text-emerald-300">{diffToCheckIn(checkIn)}</p>
+              <p className="mt-1 text-[0.7rem] text-slate-500">(Giriş tarihine göre)</p>
+            </div>
+          </div>
+
+          {/* ODA EŞLEŞMESİ */}
+          <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 space-y-2">
+            <p className="text-[0.75rem] text-slate-400">Oda eşleşmesi (misafir isteği ↔ otelin sunduğu)</p>
+            <div className="grid gap-2 md:grid-cols-3">
+              <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                <p className="text-[0.7rem] text-slate-400">Misafirin istediği</p>
+                <p className="text-slate-100 font-semibold whitespace-pre-wrap">{guestWantsRoomsText}</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                <p className="text-[0.7rem] text-slate-400">Otelin sunduğu</p>
+                <p className="text-slate-100 font-semibold whitespace-pre-wrap">{hotelOffersRoomsText}</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                <p className="text-[0.7rem] text-slate-400">Sonuç</p>
+                <p className={`font-semibold ${guestWantsRoomsText === hotelOffersRoomsText ? "text-emerald-300" : "text-amber-200"}`}>
+                  {guestWantsRoomsText === hotelOffersRoomsText ? "Eşleşiyor" : "Farklı olabilir"}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* ODA KIRILIMI (tıklanabilir) */}
+          <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 space-y-2">
+            <p className="text-[0.75rem] text-slate-400">Oda kırılımı (teklif) — tıkla, oda detayını aç</p>
+
+            {roomBreakdown.length === 0 ? (
+              <p className="text-[0.8rem] text-slate-300">Bu teklifte oda kırılımı yok.</p>
+            ) : (
+              <div className="grid gap-2 md:grid-cols-2">
+                {roomBreakdown.map((rb: any, idx: number) => {
+                  const roomLabel = safeStr(rb?.roomTypeName || rb?.name || "Oda");
+                  const n = safeNum(rb?.nights, 0) || safeNum(reqAny?.nights, 0) || 1;
+                  const nightly = safeNum(rb?.nightlyPrice, 0);
+                  const total = safeNum(rb?.totalPrice, nightly * n);
+
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => openRoomModal(rb)}
+                      className="rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3 hover:bg-white/[0.03] text-left"
+                      title="Oda detayını aç"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-slate-100 font-semibold flex items-center gap-2">
+                            {roomLabel} <span className="text-slate-400 text-[0.75rem]">↗</span>
+                          </p>
+                          <p className="text-[0.75rem] text-slate-400">
+                            {n} gece × {nightly.toLocaleString("tr-TR")} {safeStr(offerAny.currency, "TRY")}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[0.7rem] text-slate-400">Toplam</p>
+                          <p className="text-emerald-300 font-extrabold">
+                            {total.toLocaleString("tr-TR")} {safeStr(offerAny.currency, "TRY")}
+                          </p>
+                          <p className="text-[0.7rem] text-slate-500">Detay ▶</p>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+              <p className="text-[0.7rem] text-slate-400">Otel notu</p>
+              <p className="text-[0.8rem] text-slate-100 whitespace-pre-wrap">{offer.note ? String(offer.note) : "Not yok."}</p>
             </div>
           </div>
 
           {/* FİYAT GEÇMİŞİ / PAZARLIK */}
           <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 space-y-2">
-            <p className="text-[0.75rem] text-slate-400">Fiyat geçmişi / pazarlık akışı</p>
+            <div className="flex items-center justify-between">
+              <p className="text-[0.75rem] text-slate-400">Fiyat geçmişi / pazarlık</p>
+              <span className="text-[0.7rem] text-slate-500">Adım: {historySorted.length}</span>
+            </div>
 
-            <div className="space-y-2">
-              {historyToShow.map((h, idx) => {
-                const who = h?.by || h?.actor || "hotel";
-                const badge =
-                  who === "guest"
-                    ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
-                    : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
+            {historySorted.length === 0 ? (
+              <p className="text-[0.8rem] text-slate-300">Fiyat geçmişi yok.</p>
+            ) : (
+              <div className="space-y-2">
+                {historySorted.map((h, idx) => {
+                  const who = h?.actor || "hotel";
+                  const badge =
+                    who === "guest"
+                      ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                      : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
 
-                const label = fill(h?.label || h?.event || (who === "guest" ? "Misafir" : "Otel"));
-                const price = h?.price ?? h?.totalPrice ?? null;
-                const currency = h?.currency ?? offer.currency;
+                  const kind = safeStr(h?.kind, "");
+                  const label =
+                    kind === "initial" ? "İlk fiyat" : kind === "counter" ? "Karşı teklif" : kind === "update" ? "Güncelleme" : "Adım";
 
-                return (
-                  <div
-                    key={idx}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2"
-                  >
-                    <div className="min-w-[220px]">
-                      <div className="flex items-center gap-2">
-                        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[0.65rem] ${badge}`}>
-                          {who === "guest" ? "Misafir" : "Otel"}
-                        </span>
-                        <span className="text-slate-100 text-[0.8rem] font-semibold">{label}</span>
+                  return (
+                    <div key={idx} className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[0.65rem] ${badge}`}>
+                            {who === "guest" ? "Misafir" : "Otel"}
+                          </span>
+                          <span className="text-slate-100 font-semibold">{label}</span>
+                          <span className="text-[0.7rem] text-slate-500">{fmtDateTime(h?.createdAt)}</span>
+                        </div>
+                        <div className="text-emerald-300 font-extrabold">
+                          {safeNum(h?.price, 0).toLocaleString("tr-TR")} {safeStr(offerAny.currency, "TRY")}
+                        </div>
                       </div>
-                      <div className="text-[0.7rem] text-slate-500">{fmtDateTime(h?.at)}</div>
                       <div className="text-[0.75rem] text-slate-300 mt-1 whitespace-pre-wrap">
                         {h?.note ? String(h.note) : "Not yok."}
                       </div>
                     </div>
-
-                    <div className="text-right">
-                      <div className="text-slate-100 text-[0.85rem] font-semibold">
-                        {price != null ? `${price} ${currency}` : "Belirtilmemiş"}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* ODA KIRILIMI */}
-          <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 space-y-2">
-            <p className="text-[0.75rem] text-slate-400">Oda kırılımı (teklif)</p>
-
-            {roomBreakdown.length === 0 ? (
-              <p className="text-[0.8rem] text-slate-300">
-                Bu teklifte oda kırılımı yok.
-              </p>
-            ) : (
-              <div className="space-y-2">
-                {roomBreakdown.map((rb: any, idx: number) => (
-                  <div
-                    key={idx}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2"
-                  >
-                    <div className="space-y-0.5">
-                      <p className="text-[0.75rem] text-slate-400">Oda {idx + 1}</p>
-
-                      <button
-                        type="button"
-                        onClick={() => openRoomModal(rb)}
-                        className="text-left text-slate-100 font-semibold hover:text-emerald-300 hover:underline"
-                        title="Oda detayını aç"
-                      >
-                        {fill(rb?.roomTypeName || rb?.name || "Oda")}
-                      </button>
-
-                      <p className="text-[0.7rem] text-slate-400">
-                        {fill(rb?.nights, "—")} gece × {fill(rb?.nightlyPrice, "—")} {fill(offer.currency, "TRY")}
-                      </p>
-                    </div>
-
-                    <div className="text-right">
-                      <p className="text-[0.75rem] text-slate-400">Toplam</p>
-                      <p className="text-[0.85rem] font-semibold text-emerald-300">
-                        {fill(rb?.totalPrice, "—")} {fill(offer.currency, "TRY")}
-                      </p>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
-
-            <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
-              <p className="text-[0.7rem] text-slate-400">Misafire not</p>
-              <p className="text-[0.8rem] text-slate-100 whitespace-pre-wrap">
-                {offer.note ? String(offer.note) : "Not yok."}
-              </p>
-            </div>
           </div>
 
-          {/* İLGİLİ TALEP (TAM) */}
+          {/* TALEP DETAYI (DB FULL) */}
           <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 space-y-3">
-            <p className="text-[0.75rem] text-slate-400">
-              İlgili talep (misafirin doldurduğu bilgiler - TAM)
-            </p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[0.75rem] text-slate-400">Misafir talebi (DB’deki tüm bilgiler)</p>
+              <button
+                type="button"
+                onClick={() => {
+                  try { navigator.clipboard.writeText(prettyReqJson); alert("Talep JSON panoya kopyalandı."); } catch {}
+                }}
+                className="rounded-md border border-slate-700 px-3 py-1 text-[0.75rem] text-slate-200 hover:border-slate-500"
+              >
+                Kopyala
+              </button>
+            </div>
 
-            <div className="grid gap-3 md:grid-cols-2">
-              {/* Konaklama */}
-              <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 space-y-1">
-                <p className="text-[0.7rem] text-slate-400">Konaklama</p>
-                <p className="text-slate-100 font-semibold">
-                  {fill(reqAny.city)}{reqAny.district ? ` / ${reqAny.district}` : ""}
-                </p>
-                <p className="text-[0.8rem] text-slate-200">
-                  {fill(checkIn)} – {fill(checkOut)}
-                </p>
-                <p className="text-[0.75rem] text-slate-300">
-                  {fill(totalGuests, "0")} kişi • {fill(roomsCount, "1")} oda
-                </p>
+            <div className="grid gap-2 md:grid-cols-2">
+              {topPairs.map((it) => (
+                <div key={it.k} className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-[0.7rem] text-slate-400">{it.k}</p>
+                  <pre className="text-slate-100 text-sm mt-1 whitespace-pre-wrap">{renderValue(it.v)}</pre>
+                </div>
+              ))}
+            </div>
 
-                <p className="text-[0.75rem] text-slate-300">
-                  Yetişkin: {fill(adults, "0")} • Çocuk: {fill(childrenCount, "0")}
-                </p>
+            <details className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+              <summary className="cursor-pointer text-[0.8rem] text-slate-200 font-semibold">Tüm alanları aç (JSON)</summary>
+              <pre className="mt-3 whitespace-pre-wrap text-[0.72rem] text-slate-300 overflow-x-auto">{prettyReqJson}</pre>
+            </details>
 
-                <p className="text-[0.75rem] text-slate-300">
-                  Çocuk yaşları: {childrenAges.length > 0 ? childrenAges.join(", ") : "Belirtilmemiş"}
-                </p>
-
-                <p className="text-[0.75rem] text-slate-300">
-                  Yakınımda ara: {reqAny.nearMe ? "Açık" : "Kapalı"}{" "}
-                  {reqAny.nearMe ? `• ${fill(reqAny.nearMeKm, "—")} km` : ""}
-                </p>
+            {/* KVKK iletişim kutusu */}
+            <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-[0.7rem] text-slate-400">İletişim bilgileri</p>
+                <span className="text-[0.65rem] text-slate-500">{isUnlocked ? "Rezervasyon sonrası açık" : "Rezervasyona kadar maskeli"}</span>
               </div>
-
-              {/* Tercihler */}
-              <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 space-y-2">
-                <p className="text-[0.7rem] text-slate-400">Tercihler</p>
-
-                <p className="text-[0.75rem] text-slate-300">
-                  Tesis türü: <span className="text-slate-100 font-semibold">{fill(accommodationType, "Farketmez")}</span>
-                </p>
-
-                <p className="text-[0.75rem] text-slate-300">
-                  Konaklama tipi:{" "}
-                  <span className="text-slate-100 font-semibold">
-                    {boardTypes.length > 0 ? boardTypes.join(", ") : fill(boardTypeSingle, "Farketmez")}
-                  </span>
-                </p>
-
-                <p className="text-[0.75rem] text-slate-300">
-                  Yıldız:{" "}
-                  <span className="text-amber-300 font-semibold">
-                    {starRating ? `${starRating}★` : desiredStars.length > 0 ? desiredStars.map((s: any) => `${s}★`).join(", ") : "Farketmez"}
-                  </span>
-                </p>
-
-                <p className="text-[0.75rem] text-slate-300">
-                  Cevap süresi:{" "}
-                  <span className="text-slate-100 font-semibold">
-                    {reqAny.responseTimeAmount ? `${reqAny.responseTimeAmount} ${fill(reqAny.responseTimeUnit, "")}` : "Belirtilmemiş"}
-                  </span>{" "}
-                  <span className="text-slate-500">
-                    (toplam {fill(reqAny.responseDeadlineMinutes, "—")} dk)
-                  </span>
-                </p>
-
-                <p className="text-[0.75rem] text-slate-300">
-                  Konum notu: <span className="text-slate-100">{fill(locationNote, "Not yok")}</span>
-                </p>
-              </div>
-
-              {/* Oda tercihleri */}
-              <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 space-y-2 md:col-span-2">
-                <p className="text-[0.7rem] text-slate-400">Oda tercihleri</p>
-
-                {roomTypeRows.length > 0 ? (
-                  <div className="flex flex-wrap gap-2">
-                    {roomTypeRows.map((r: any, i: number) => (
-                      <span
-                        key={i}
-                        className="inline-flex items-center rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-[0.7rem] text-slate-200"
-                      >
-                        {fill(r?.typeKey)}: {fill(r?.count, "0")} oda
-                      </span>
-                    ))}
-                  </div>
-                ) : roomTypeCounts ? (
-                  <div className="flex flex-wrap gap-2">
-                    {Object.entries(roomTypeCounts).map(([k, v]: any) => (
-                      <span
-                        key={k}
-                        className="inline-flex items-center rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-[0.7rem] text-slate-200"
-                      >
-                        {k}: {v} oda
-                      </span>
-                    ))}
-                  </div>
-                ) : roomTypesArr.length > 0 ? (
-                  <div className="flex flex-wrap gap-2">
-                    {roomTypesArr.map((t: any, i: number) => (
-                      <span
-                        key={i}
-                        className="inline-flex items-center rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-[0.7rem] text-slate-200"
-                      >
-                        {String(t)}
-                      </span>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-[0.8rem] text-slate-300">Farketmez</p>
-                )}
-              </div>
-
-              {/* Özellikler */}
-              <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 space-y-2">
-                <p className="text-[0.7rem] text-slate-400">İstenen özellikler</p>
-
-                <p className="text-[0.75rem] text-slate-100 whitespace-pre-wrap">
-                  {(featureKeys.length > 0 || hotelFeaturePrefs.length > 0)
-                    ? (featureKeys.length > 0 ? featureKeys : hotelFeaturePrefs).join(", ")
-                    : "Belirtilmemiş"}
-                </p>
-
+              <div className="grid gap-2 md:grid-cols-2">
                 <div className="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
-                  <p className="text-[0.7rem] text-slate-400">Ek özellik notu</p>
-                  <p className="text-[0.8rem] text-slate-100 whitespace-pre-wrap">
-                    {fill(extraFeaturesText, "Not yok")}
-                  </p>
+                  <p className="text-[0.65rem] text-slate-400">Ad soyad</p>
+                  <p className="text-[0.85rem] text-slate-100 font-semibold">{nameToShow}</p>
                 </div>
-              </div>
-
-              {/* Notlar */}
-              <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 space-y-2">
-                <p className="text-[0.7rem] text-slate-400">Misafir notları</p>
-
                 <div className="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
-                  <p className="text-[0.7rem] text-slate-400">Genel not</p>
-                  <p className="text-[0.8rem] text-slate-100 whitespace-pre-wrap">
-                    {fill(generalNote, "Not yok")}
-                  </p>
+                  <p className="text-[0.65rem] text-slate-400">Firma</p>
+                  <p className="text-[0.85rem] text-slate-100">{companyToShow}</p>
                 </div>
-
                 <div className="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
-                  <p className="text-[0.7rem] text-slate-400">İletişim notu</p>
-                  <p className="text-[0.8rem] text-slate-100 whitespace-pre-wrap">
-                    {fill(contactNote, "Not yok")}
-                  </p>
+                  <p className="text-[0.65rem] text-slate-400">E-posta</p>
+                  <p className="text-[0.85rem] text-slate-100">{emailToShow}</p>
+                </div>
+                <div className="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
+                  <p className="text-[0.65rem] text-slate-400">Telefon</p>
+                  <p className="text-[0.85rem] text-slate-100">{phoneToShow}</p>
+                  <p className="text-[0.75rem] text-slate-400 mt-1">2. telefon: <span className="text-slate-200">{phone2ToShow || "Belirtilmemiş"}</span></p>
                 </div>
               </div>
-
-              {/* İletişim (KVKK) */}
-              <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 space-y-2 md:col-span-2">
-                <div className="flex items-center justify-between">
-                  <p className="text-[0.7rem] text-slate-400">İletişim bilgileri</p>
-                  <span className="text-[0.65rem] text-slate-500">
-                    {isUnlocked ? "Rezervasyon sonrası açık" : "Rezervasyona kadar maskeli"}
-                  </span>
-                </div>
-
-                <div className="grid gap-2 md:grid-cols-2">
-                  <div className="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
-                    <p className="text-[0.65rem] text-slate-400">Ad soyad</p>
-                    <p className="text-[0.85rem] text-slate-100 font-semibold">{nameToShow}</p>
-                  </div>
-                  <div className="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
-                    <p className="text-[0.65rem] text-slate-400">Firma / kurum</p>
-                    <p className="text-[0.85rem] text-slate-100">{companyToShow}</p>
-                  </div>
-                  <div className="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
-                    <p className="text-[0.65rem] text-slate-400">E-posta</p>
-                    <p className="text-[0.85rem] text-slate-100">{emailToShow}</p>
-                  </div>
-                  <div className="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2">
-                    <p className="text-[0.65rem] text-slate-400">Telefon</p>
-                    <p className="text-[0.85rem] text-slate-100">{phoneToShow}</p>
-                    <p className="text-[0.75rem] text-slate-400 mt-1">
-                      2. telefon: <span className="text-slate-200">{phone2ToShow ? phone2ToShow : "Belirtilmemiş"}</span>
-                    </p>
-                  </div>
-                </div>
-
-                <p className="text-[0.65rem] text-slate-500">
-                  KVKK gereği kimlik/iletişim bilgileri rezervasyon onaylanana kadar gizlenir.
-                </p>
-              </div>
+              <p className="text-[0.65rem] text-slate-500">KVKK gereği rezervasyon onayına kadar iletişim maskelenir.</p>
             </div>
           </div>
-
-          <p className="text-[0.65rem] text-slate-500">
-            Bu detay ekranı sadece otel tarafında görünür. KVKK gereği bilgiler rezervasyon sonrası açılır.
-          </p>
         </div>
       </div>
 
@@ -1430,14 +1349,10 @@ function OfferDetailModal({
           <div className="relative mt-16 w-full max-w-2xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-xl shadow-slate-950/60 max-h-[80vh] overflow-y-auto space-y-3">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h3 className="text-sm font-semibold text-slate-100">
-                  Oda detayı: {fill(activeRoomProfile?.name, "Oda")}
-                </h3>
+                <h3 className="text-sm font-semibold text-slate-100">Oda detayı: {safeStr(activeRoomProfile?.name, "Oda")}</h3>
                 <p className="text-[0.75rem] text-slate-400">
-                  Kapasite: {fill(activeRoomProfile?.maxAdults, "—")} yetişkin
-                  {activeRoomProfile?.maxChildren != null
-                    ? ` • ${activeRoomProfile.maxChildren} çocuk`
-                    : ""}
+                  Kapasite: {safeStr(activeRoomProfile?.maxAdults, "—")} yetişkin
+                  {activeRoomProfile?.maxChildren != null ? ` • ${activeRoomProfile.maxChildren} çocuk` : ""}
                 </p>
               </div>
               <button
@@ -1451,27 +1366,20 @@ function OfferDetailModal({
 
             <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
               <p className="text-[0.7rem] text-slate-400">Kısa açıklama</p>
-              <p className="text-[0.8rem] text-slate-100 whitespace-pre-wrap">
-                {fill(activeRoomProfile?.shortDescription, "Belirtilmemiş")}
-              </p>
+              <p className="text-[0.8rem] text-slate-100 whitespace-pre-wrap">{safeStr(activeRoomProfile?.shortDescription, "Belirtilmemiş")}</p>
             </div>
 
             <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
               <p className="text-[0.7rem] text-slate-400">Detay</p>
-              <p className="text-[0.8rem] text-slate-100 whitespace-pre-wrap">
-                {fill(activeRoomProfile?.description, "Belirtilmemiş")}
-              </p>
-            </div>
+              <p className="text-[0.8rem] text-slate-100 whitespace-pre-wrap">{safeStr(activeRoomProfile?.description, "Belirtilmemiş")}</p>
+             </div>
 
             {Array.isArray(activeRoomProfile?.imageUrls) && activeRoomProfile.imageUrls.length > 0 ? (
               <div className="space-y-2">
                 <p className="text-[0.75rem] text-slate-400">Oda görselleri</p>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
                   {activeRoomProfile.imageUrls.map((u: string, i: number) => (
-                    <div
-                      key={i}
-                      className="aspect-video rounded-lg border border-slate-800 overflow-hidden bg-slate-900"
-                    >
+                    <div key={i} className="aspect-video rounded-lg border border-slate-800 overflow-hidden bg-slate-900">
                       <img src={u} alt={`room-${i}`} className="w-full h-full object-cover" />
                     </div>
                   ))}

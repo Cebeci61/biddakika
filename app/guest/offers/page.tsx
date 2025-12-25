@@ -1,5 +1,6 @@
 "use client";
 
+import { onSnapshot, } from "firebase/firestore";
 import { useRouter } from "next/navigation";
 import React, { useEffect, useMemo, useState, FormEvent } from "react";
 import { Protected } from "@/components/Protected";
@@ -582,190 +583,262 @@ export default function GuestOffersPage() {
 }
 
 
-  async function handleCounterSubmit(e: FormEvent<HTMLFormElement>, offer: GuestOffer) {
-    e.preventDefault();
-    if (!canCounter(offer)) return;
+// ✅ PAZARLIK (KARŞI TEKLİF) — HATASIZ
+async function handleCounterSubmit(e: FormEvent<HTMLFormElement>, offer: GuestOffer) {
+  e.preventDefault();
 
-    const value = Number(counterPrice);
-    if (!Number.isFinite(value) || value <= 0) {
-      setActionError("Lütfen geçerli bir karşı teklif girin.");
-      return;
-    }
+  setActionError(null);
+  setActionMessage(null);
 
-    try {
-      setSavingAction(true);
-      await updateDoc(doc(db, "offers", offer.id), {
-        guestCounterPrice: value,
-        status: "countered",
-        guestCounterAt: serverTimestamp()
-      });
-
-      await pushOfferPriceHistory(db, offer.id, {
-        actor: "guest",
-        kind: "counter",
-        price: value,
-        note: null
-      });
-
-      setOffers((prev) => prev.map((o) => (o.id === offer.id ? { ...o, guestCounterPrice: value, status: "countered" } : o)));
-      setActionMessage("Karşı teklifin otelle paylaşıldı.");
-      await createNotification(db, offer.hotelId, { type: "guestCounter", offerId: offer.id, requestId: offer.requestId, amount: value });
-
-      cancelCounter();
-    } catch (err) {
-      console.error(err);
-      setActionError("Karşı teklif gönderilirken hata oluştu.");
-    } finally {
-      setSavingAction(false);
-    }
+  if (!canCounter(offer)) {
+    setActionError("Bu teklif için pazarlık yapılamaz.");
+    return;
   }
 
-  function handleSelectForPayment(offer: GuestOffer) {
-    setSelectedForPaymentId(offer.id);
-    setActionMessage("Bu teklifi seçtin. Ödemeye ilerleyerek rezervasyon oluşturabilirsin.");
-    setActionError(null);
-  }
-  function handleCancelSelection() {
-    setSelectedForPaymentId(null);
+  const value = Number(counterPrice);
+  if (!Number.isFinite(value) || value <= 0) {
+    setActionError("Lütfen geçerli bir karşı teklif girin.");
+    return;
   }
 
-  function handleOpenPaymentModal(offer: GuestOffer) {
-    const hotel = hotelsMap[offer.hotelId];
-    const po = hotel?.hotelProfile?.paymentOptions;
+  // 🛡️ Mantık: Misafir, otelin teklifinden yüksek karşı teklif veremesin (istersen kaldır)
+  if (value > Number(offer.totalPrice || 0)) {
+    setActionError("Karşı teklif, otelin teklifinden yüksek olamaz.");
+    return;
+  }
 
-    const availableMethods: PaymentMethod[] = po
-      ? ([po.card3d && "card3d", po.payAtHotel && "payAtHotel"].filter(Boolean) as PaymentMethod[])
-      : (["card3d", "payAtHotel"] as PaymentMethod[]);
+  // 🛡️ Mantık: Çok düşük rakam engeli (istersen değiştir)
+  const minAllowed = Math.max(1, Math.round(Number(offer.totalPrice || 0) * 0.3));
+  if (value < minAllowed) {
+    setActionError(`Karşı teklif çok düşük. En az ${minAllowed} ${offer.currency} olmalı.`);
+    return;
+  }
 
-    const finalMethods = availableMethods.length ? availableMethods : (["card3d", "payAtHotel"] as PaymentMethod[]);
+  try {
+    setSavingAction(true);
 
-    setPaymentOffer(offer);
-    setPaymentMethod(finalMethods[0] ?? null);
+    // 1) Teklifi güncelle
+    await updateDoc(doc(db, "offers", offer.id), {
+      guestCounterPrice: value,
+      status: "countered",
+      guestCounterAt: serverTimestamp()
+    });
+
+    // 2) Price history (arrayUnion)
+    await pushOfferPriceHistory(db, offer.id, {
+      actor: "guest",
+      kind: "counter",
+      price: value,
+      note: null
+    });
+
+    // 3) UI güncelle
+    setOffers((prev) =>
+      prev.map((o) => (o.id === offer.id ? { ...o, guestCounterPrice: value, status: "countered" } : o))
+    );
+
+    // 4) Bildirim
+    await createNotification(db, offer.hotelId, {
+      type: "guestCounter",
+      offerId: offer.id,
+      requestId: offer.requestId,
+      amount: value
+    });
+
+    // 5) Formu kapat
+    cancelCounter();
+    setActionMessage("Karşı teklifin otele paylaşıldı.");
+  } catch (err: any) {
+    console.error("COUNTER_ERROR:", err);
+    setActionError(`Karşı teklif gönderilemedi: ${err?.message || String(err)}`);
+  } finally {
+    setSavingAction(false);
+  }
+}
+
+// ✅ ÖDEMEYE SEÇ
+function handleSelectForPayment(offer: GuestOffer) {
+  setSelectedForPaymentId(offer.id);
+  setActionMessage("Bu teklifi seçtin. Ödemeye ilerleyerek rezervasyon oluşturabilirsin.");
+  setActionError(null);
+}
+
+// ✅ SEÇİMİ İPTAL
+function handleCancelSelection() {
+  setSelectedForPaymentId(null);
+}
+
+// ✅ ÖDEME MODAL AÇ
+function handleOpenPaymentModal(offer: GuestOffer) {
+  const hotel = hotelsMap[offer.hotelId];
+  const po = hotel?.hotelProfile?.paymentOptions;
+
+  const availableMethods: PaymentMethod[] = po
+    ? ([po.card3d && "card3d", po.payAtHotel && "payAtHotel"].filter(Boolean) as PaymentMethod[])
+    : (["card3d", "payAtHotel"] as PaymentMethod[]);
+
+  const finalMethods = availableMethods.length ? availableMethods : (["card3d", "payAtHotel"] as PaymentMethod[]);
+
+  setPaymentOffer(offer);
+  setPaymentMethod(finalMethods[0] ?? null);
+  setPaymentError(null);
+  setPaymentMessage(null);
+  setPaymentOpen(true);
+}
+
+// ✅ ÖDEME MODAL KAPAT
+function handleClosePaymentModal() {
+  setPaymentOpen(false);
+  setPaymentOffer(null);
+  setPaymentMethod(null);
+  setThreeDSOpen(false);
+}
+
+// ✅ REZERVASYON OLUŞTUR (HOTEL)
+async function createBooking(finalPaymentMethod: PaymentMethod) {
+  if (!paymentOffer || !profile) {
+    setPaymentError("Giriş bilgisi veya teklif bulunamadı.");
+    return;
+  }
+
+  const offer = paymentOffer;
+  const req = requestsMap[offer.requestId];
+  const hotel = hotelsMap[offer.hotelId];
+
+  try {
+    setSavingPayment(true);
     setPaymentError(null);
     setPaymentMessage(null);
-    setPaymentOpen(true);
-  }
 
-  function handleClosePaymentModal() {
-    setPaymentOpen(false);
-    setPaymentOffer(null);
-    setPaymentMethod(null);
+    // paymentStatus standardize
+    const paymentStatus =
+      finalPaymentMethod === "card3d" ? "paid" : finalPaymentMethod === "payAtHotel" ? "payAtHotel" : "pending";
+
+    const bookingRef = await addDoc(collection(db, "bookings"), {
+      type: "hotel",
+
+      offerId: offer.id,
+      requestId: req?.id ?? offer.requestId,
+
+      guestId: profile.uid,
+      guestName: profile.displayName || (req as any)?.guestName || (req as any)?.contactName || null,
+      guestEmail: profile.email || (req as any)?.guestEmail || null,
+      guestPhone: (req as any)?.guestPhone || null,
+
+      hotelId: hotel?.id ?? offer.hotelId,
+      hotelName: hotel?.displayName || offer.hotelName || null,
+
+      city: req?.city ?? null,
+      district: req?.district ?? null,
+      checkIn: req?.checkIn ?? null,
+      checkOut: req?.checkOut ?? null,
+      adults: req?.adults ?? null,
+      childrenCount: req?.childrenCount ?? null,
+      childrenAges: (req as any)?.childrenAges ?? null,
+      roomsCount: req?.roomsCount ?? null,
+
+      totalPrice: Number(offer.totalPrice ?? 0),
+      currency: offer.currency ?? "TRY",
+
+      paymentMethod: finalPaymentMethod,
+      paymentStatus,
+
+      createdAt: serverTimestamp(),
+      status: "active",
+
+      roomBreakdown: offer.roomBreakdown ?? null,
+      cancellationPolicyType: offer.cancellationPolicyType ?? null,
+      cancellationPolicyDays: offer.cancellationPolicyDays ?? null
+    });
+
+    // offer accepted
+    await updateDoc(doc(db, "offers", offer.id), {
+      status: "accepted",
+      acceptedAt: serverTimestamp(),
+      bookingId: bookingRef.id
+    });
+
+    await createNotification(db, profile.uid, {
+      type: "bookingCreated",
+      bookingId: bookingRef.id,
+      offerId: offer.id
+    });
+    await createNotification(db, hotel?.id, {
+      type: "bookingCreated",
+      bookingId: bookingRef.id,
+      offerId: offer.id
+    });
+
+    setPaymentMessage("Rezervasyonun oluşturuldu. Rezervasyonlarım sayfasına yönlendiriyorum…");
+    setSelectedForPaymentId(null);
+
+    setTimeout(() => {
+      handleClosePaymentModal();
+      router.push("/guest/bookings");
+    }, 1100);
+  } catch (err: any) {
+    console.error("BOOKING_CREATE_ERROR:", err);
+    setPaymentError(`Rezervasyon oluşturulurken hata oluştu: ${err?.message || String(err)}`);
+  } finally {
+    setSavingPayment(false);
     setThreeDSOpen(false);
   }
+}
 
-  async function createBooking(finalPaymentMethod: PaymentMethod) {
-    if (!paymentOffer || !profile) {
-      setPaymentError("Giriş bilgisi veya teklif bulunamadı.");
-      return;
-    }
+// ✅ ÖDEME ONAY
+async function handlePaymentConfirm() {
+  setPaymentError(null);
+  setPaymentMessage(null);
 
-    const offer = paymentOffer;
-    const req = requestsMap[offer.requestId];
-    const hotel = hotelsMap[offer.hotelId];
-
-    try {
-      setSavingPayment(true);
-
-      const bookingRef = await addDoc(collection(db, "bookings"), {
-        type: "hotel",
-
-        offerId: offer.id,
-        requestId: req?.id ?? offer.requestId,
-
-        guestId: profile.uid,
-        guestName: profile.displayName || (req as any)?.guestName || (req as any)?.contactName || null,
-        guestEmail: profile.email || (req as any)?.guestEmail || null,
-        guestPhone: (req as any)?.guestPhone || null,
-
-        hotelId: hotel?.id ?? offer.hotelId,
-        hotelName: hotel?.displayName || offer.hotelName || null,
-
-        city: req?.city ?? null,
-        district: req?.district ?? null,
-        checkIn: req?.checkIn ?? null,
-        checkOut: req?.checkOut ?? null,
-        adults: req?.adults ?? null,
-        childrenCount: req?.childrenCount ?? null,
-        childrenAges: (req as any)?.childrenAges ?? null,
-        roomsCount: req?.roomsCount ?? null,
-
-        totalPrice: offer.totalPrice,
-        currency: offer.currency,
-
-        paymentMethod: finalPaymentMethod,
-        paymentStatus: finalPaymentMethod === "card3d" ? "paid" : "pending",
-
-        createdAt: serverTimestamp(),
-        status: "active",
-
-        roomBreakdown: offer.roomBreakdown ?? null,
-        cancellationPolicyType: offer.cancellationPolicyType ?? null,
-        cancellationPolicyDays: offer.cancellationPolicyDays ?? null
-      });
-
-      await updateDoc(doc(db, "offers", offer.id), {
-        status: "accepted",
-        acceptedAt: serverTimestamp(),
-        bookingId: bookingRef.id
-      });
-
-      await createNotification(db, profile.uid, { type: "bookingCreated", bookingId: bookingRef.id, offerId: offer.id });
-      await createNotification(db, hotel?.id, { type: "bookingCreated", bookingId: bookingRef.id, offerId: offer.id });
-
-      setPaymentMessage("Rezervasyonun oluşturuldu. Rezervasyonlarım sayfasına yönlendiriyorum…");
-      setSelectedForPaymentId(null);
-
-      setTimeout(() => {
-        handleClosePaymentModal();
-        router.push("/guest/bookings");
-      }, 1100);
-    } catch (err) {
-      console.error(err);
-      setPaymentError("Rezervasyon oluşturulurken hata oluştu.");
-    } finally {
-      setSavingPayment(false);
-      setThreeDSOpen(false);
-    }
+  if (!paymentOffer || !paymentMethod) {
+    setPaymentError("Lütfen bir ödeme yöntemi seçin.");
+    return;
   }
 
-  async function handlePaymentConfirm() {
-    setPaymentError(null);
-    setPaymentMessage(null);
-
-    if (!paymentOffer || !paymentMethod) {
-      setPaymentError("Lütfen bir ödeme yöntemi seçin.");
+  if (paymentMethod === "card3d") {
+    if (!cardName || !cardNumber || !cardExpiry || !cardCvc) {
+      setPaymentError("3D Secure için kart bilgilerini doldurun.");
       return;
     }
-
-    if (paymentMethod === "card3d") {
-      if (!cardName || !cardNumber || !cardExpiry || !cardCvc) {
-        setPaymentError("3D Secure için kart bilgilerini doldurun.");
-        return;
-      }
-      setThreeDSOpen(true);
-      return;
-    }
-
-    await createBooking("payAtHotel");
+    setThreeDSOpen(true);
+    return;
   }
 
-  async function handleReject(offer: GuestOffer) {
-    const ok = window.confirm("Bu teklifi reddetmek istediğine emin misin?");
-    if (!ok) return;
+  // payAtHotel
+  await createBooking("payAtHotel");
+}
 
-    try {
-      setSavingAction(true);
-      await updateDoc(doc(db, "offers", offer.id), { status: "rejected", rejectedAt: serverTimestamp() });
-      setOffers((prev) => prev.map((o) => (o.id === offer.id ? { ...o, status: "rejected" } : o)));
-      setActionMessage("Bu teklifi reddettin.");
-      await createNotification(db, offer.hotelId, { type: "offerRejected", offerId: offer.id, requestId: offer.requestId });
-    } catch (err) {
-      console.error(err);
-      setActionError("Teklif reddedilirken hata oluştu.");
-    } finally {
-      setSavingAction(false);
-    }
+// ✅ REDDET — HATASIZ + DOĞRU MESAJ
+async function handleReject(offer: GuestOffer) {
+  const ok = window.confirm("Bu teklifi reddetmek istediğine emin misin?");
+  if (!ok) return;
+
+  try {
+    setSavingAction(true);
+    setActionError(null);
+    setActionMessage(null);
+
+    await updateDoc(doc(db, "offers", offer.id), {
+      status: "rejected",
+      rejectedAt: serverTimestamp()
+    });
+
+    setOffers((prev) => prev.map((o) => (o.id === offer.id ? { ...o, status: "rejected" } : o)));
+    setActionMessage("Bu teklifi reddettin.");
+
+    await createNotification(db, offer.hotelId, {
+      type: "offerRejected",
+      offerId: offer.id,
+      requestId: offer.requestId
+    });
+  } catch (err: any) {
+    console.error("REJECT_ERROR:", err);
+    setActionError(`Teklif reddedilemedi: ${err?.message || String(err)}`);
+  } finally {
+    setSavingAction(false);
   }
+}
+
 
   /* ---------------------------
     PACKAGE ACTIONS
@@ -2075,18 +2148,188 @@ function OfferDetailModal({
   req?: RequestSummary;
   onClose: () => void;
 }) {
-  const hp = hotel?.hotelProfile;
+  const db = getFirestoreDb();
 
-  // ✅ Request RAW (her şey burada)
-  const reqAny: any = req || {};
+  // ✅ CANLI veri
+  const [liveOffer, setLiveOffer] = useState<GuestOffer>(offer);
+  const [liveReq, setLiveReq] = useState<any>(req ?? null);
+  const [liveHotel, setLiveHotel] = useState<HotelInfo | undefined>(hotel);
 
-  // ✅ Hotel images
-  const hotelImages = (hp?.imageUrls ?? []).filter(Boolean);
-  const [activeHotelImage, setActiveHotelImage] = useState(0);
+  const [reqLoading, setReqLoading] = useState(true);
+  const [offerLoading, setOfferLoading] = useState(true);
+  const [hotelLoading, setHotelLoading] = useState(true);
 
   // ✅ Lightbox
   const [imgOpen, setImgOpen] = useState(false);
   const [imgSrc, setImgSrc] = useState<string | null>(null);
+
+  // ✅ Room modal
+  const [roomModalOpen, setRoomModalOpen] = useState(false);
+  const [roomModalRoom, setRoomModalRoom] = useState<RoomTypeProfile | null>(null);
+
+  // ---------------- HELPERS ----------------
+  const safeStr = (v: any, fb = "—") => {
+    if (v === null || v === undefined) return fb;
+    const s = String(v).trim();
+    return s.length ? s : fb;
+  };
+  const safeNum = (v: any, d = 0) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : d;
+  };
+  const money = (n: any, currency: string) => {
+    const val = safeNum(n, 0);
+    return `${val.toLocaleString("tr-TR")} ${currency || "TRY"}`;
+  };
+  const toMillis = (ts: any) => {
+    try {
+      if (!ts) return 0;
+      if (typeof ts?.toMillis === "function") return ts.toMillis();
+      if (typeof ts?.toDate === "function") return ts.toDate().getTime();
+      const d = new Date(ts);
+      return Number.isNaN(d.getTime()) ? 0 : d.getTime();
+    } catch {
+      return 0;
+    }
+  };
+  const toTR = (ts: any) => {
+    try {
+      if (!ts) return "";
+      if (typeof ts?.toDate === "function") return ts.toDate().toLocaleString("tr-TR");
+      const d = new Date(ts);
+      return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("tr-TR");
+    } catch {
+      return "";
+    }
+  };
+
+  // ---------------- LIVE OFFER ----------------
+  useEffect(() => {
+    setOfferLoading(true);
+    const unsub = onSnapshot(
+      doc(db, "offers", offer.id),
+      (snap) => {
+        if (snap.exists()) {
+          const v = snap.data() as any;
+          setLiveOffer((prev) => ({
+            ...prev,
+            id: snap.id,
+            requestId: v.requestId ?? prev.requestId,
+            hotelId: v.hotelId ?? prev.hotelId,
+            hotelName: v.hotelName ?? prev.hotelName ?? null,
+
+            totalPrice: Number(v.totalPrice ?? prev.totalPrice ?? 0),
+            currency: v.currency ?? prev.currency ?? "TRY",
+            mode: (v.mode ?? prev.mode ?? "simple") as OfferMode,
+            note: v.note ?? null,
+
+            status: v.status ?? prev.status ?? "sent",
+            guestCounterPrice: v.guestCounterPrice ?? null,
+
+            createdAt: v.createdAt ?? prev.createdAt,
+            updatedAt: v.updatedAt ?? (prev as any)?.updatedAt,
+            acceptedAt: v.acceptedAt ?? (prev as any)?.acceptedAt,
+            rejectedAt: v.rejectedAt ?? (prev as any)?.rejectedAt,
+            guestCounterAt: v.guestCounterAt ?? (prev as any)?.guestCounterAt,
+
+            roomTypeId: v.roomTypeId ?? null,
+            roomTypeName: v.roomTypeName ?? null,
+            roomBreakdown: Array.isArray(v.roomBreakdown) ? v.roomBreakdown : [],
+
+            cancellationPolicyType: v.cancellationPolicyType ?? null,
+            cancellationPolicyDays: v.cancellationPolicyDays ?? null,
+
+            priceHistory: Array.isArray(v.priceHistory) ? v.priceHistory : []
+          }));
+        }
+        setOfferLoading(false);
+      },
+      () => setOfferLoading(false)
+    );
+    return () => {
+      try {
+        unsub();
+      } catch {}
+    };
+  }, [db, offer.id]);
+
+  // ---------------- LIVE REQUEST ----------------
+  useEffect(() => {
+    setReqLoading(true);
+    const unsub = onSnapshot(
+      doc(db, "requests", offer.requestId),
+      (snap) => {
+        if (snap.exists()) setLiveReq({ id: snap.id, ...(snap.data() as any) });
+        else setLiveReq(req ?? null);
+        setReqLoading(false);
+      },
+      () => setReqLoading(false)
+    );
+    return () => {
+      try {
+        unsub();
+      } catch {}
+    };
+  }, [db, offer.requestId]);
+
+  // ---------------- LIVE HOTEL (users/{hotelId}) ----------------
+  useEffect(() => {
+    const hid = liveOffer?.hotelId || offer.hotelId || (hotel as any)?.id || null;
+    if (!hid) {
+      setHotelLoading(false);
+      return;
+    }
+
+    setHotelLoading(true);
+    const unsub = onSnapshot(
+      doc(db, "users", hid),
+      (snap) => {
+        if (snap.exists()) {
+          const u = snap.data() as any;
+          setLiveHotel({
+            id: hid,
+            displayName: u.displayName,
+            email: u.email,
+            website: u.website || u.hotelProfile?.website || "",
+            hotelProfile: u.hotelProfile
+          });
+        } else {
+          setLiveHotel(hotel);
+        }
+        setHotelLoading(false);
+      },
+      () => setHotelLoading(false)
+    );
+
+    return () => {
+      try {
+        unsub();
+      } catch {}
+    };
+  }, [db, liveOffer?.hotelId, offer.hotelId, (hotel as any)?.id]);
+
+  // -------------- LIVE OBJECTS --------------
+  const offerAny: any = liveOffer || offer;
+  const reqAny: any = liveReq || {};
+  const hp = liveHotel?.hotelProfile;
+
+  // ✅ Hotel images
+// ✅ Hotel görselleri (imageUrls + images + gallery + photos) — TS hatasız
+const hotelImages = useMemo(() => {
+  const list = [
+    ...(hp?.imageUrls ?? []),
+    ...((((hp as any)?.images ?? []) as string[])),
+    ...((((hp as any)?.gallery ?? []) as string[])),
+    ...((((hp as any)?.photos ?? []) as string[]))
+  ];
+  return list.filter(Boolean);
+}, [hp]);
+  const [activeHotelImage, setActiveHotelImage] = useState(0);
+  useEffect(() => {
+    if (activeHotelImage >= hotelImages.length) setActiveHotelImage(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hotelImages.length]);
+
   const openImage = (src?: string | null) => {
     if (!src) return;
     setImgSrc(src);
@@ -2096,40 +2339,66 @@ function OfferDetailModal({
     setImgOpen(false);
     setImgSrc(null);
   };
+  // ---------- REQUEST NORMALIZATION (çok toleranslı) ----------
+  const reqCity = reqAny.city ?? reqAny.requestCity ?? reqAny.destinationCity ?? "—";
+  const reqDistrict = reqAny.district ?? reqAny.requestDistrict ?? reqAny.destinationDistrict ?? null;
 
-  // ✅ Room modal
-  const [roomModalOpen, setRoomModalOpen] = useState(false);
-  const [roomModalRoom, setRoomModalRoom] = useState<RoomTypeProfile | null>(null);
+  const checkIn = reqAny.checkIn ?? reqAny.dateFrom ?? reqAny.checkInDate ?? null;
+  const checkOut = reqAny.checkOut ?? reqAny.dateTo ?? reqAny.checkOutDate ?? null;
 
-  // ✅ Offer breakdown
-  const breakdown = Array.isArray(offer.roomBreakdown) ? offer.roomBreakdown : [];
-  const offerRoomNames = breakdown
-    .map((x: any) => (x?.roomTypeName || x?.roomTypeId || "").toString().trim())
-    .filter(Boolean);
+  const adults = safeNum(reqAny.adults ?? reqAny.paxAdults, 0);
+  const children = safeNum(reqAny.childrenCount ?? reqAny.paxChildren, 0);
+  const roomsCount = safeNum(reqAny.roomsCount, 1);
+  const childrenAges: any[] = Array.isArray(reqAny.childrenAges) ? reqAny.childrenAges : [];
 
-  // ✅ Nights
-  const nights = (() => {
-    const ci = reqAny?.checkIn || reqAny?.dateFrom || offer?.createdAt?.toDate?.()?.toISOString?.()?.slice?.(0, 10);
-    const co = reqAny?.checkOut || reqAny?.dateTo || null;
-    if (!ci || !co) return 1;
-    const d1 = new Date(ci);
-    const d2 = new Date(co);
-    const diff = Math.floor((d2.setHours(0, 0, 0, 0) - d1.setHours(0, 0, 0, 0)) / 86400000);
-    return diff > 0 ? diff : 1;
-  })();
+  const boardPref = reqAny.boardPref ?? reqAny.boardType ?? reqAny.mealPlan ?? reqAny.meal ?? "—";
+  const hotelPref = reqAny.hotelPref ?? reqAny.hotelType ?? reqAny.accommodationType ?? "—";
 
-  // ✅ Map link
+  const roomPref =
+    reqAny.roomTypePref ??
+    reqAny.roomType ??
+    (Array.isArray(reqAny.roomTypes) ? reqAny.roomTypes.join(", ") : null) ??
+    "—";
+
+  const budgetMin = reqAny.budgetMin ?? reqAny.minBudget ?? reqAny.priceMin ?? "—";
+  const budgetMax = reqAny.budgetMax ?? reqAny.maxBudget ?? reqAny.priceMax ?? "—";
+  const currencyPref = reqAny.currency ?? "TRY";
+
+  const notesAll = [
+    reqAny.notes,
+    reqAny.note,
+    reqAny.generalNote,
+    reqAny.boardTypeNote,
+    reqAny.hotelFeatureNote,
+    reqAny.locationNote,
+    reqAny.contactNote,
+    reqAny.flightNotes,
+    reqAny.transferNotes,
+    reqAny.activities
+  ]
+    .filter(Boolean)
+    .map((x: any) => String(x))
+    .join("\n\n");
+
+  const wantedFeatures: string =
+    (Array.isArray(reqAny.hotelFeaturePrefs) ? reqAny.hotelFeaturePrefs.join(", ") : "") ||
+    (Array.isArray(reqAny.featureKeys) ? reqAny.featureKeys.join(", ") : "") ||
+    safeStr(reqAny.hotelFeatureNote, "—");
+
+  // ---------- OFFER NORMALIZATION ----------
+  const offerCurrency = offerAny.currency ?? "TRY";
+  const breakdown = Array.isArray(offerAny.roomBreakdown) ? offerAny.roomBreakdown : [];
+
   const mapUrl =
     hp?.locationUrl ||
     (hp?.locationLat && hp?.locationLng
       ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${hp.locationLat},${hp.locationLng}`)}`
       : null);
 
-  // ✅ Cancellation + payment text
-  const cancelText = cancellationLabelFromOffer(offer, hp);
+  const cancelText = cancellationLabelFromOffer(offerAny, hp);
 
-  const po = hp?.paymentOptions;
   const paymentText = (() => {
+    const po = hp?.paymentOptions;
     if (!po) return "Ödeme bilgisi yok.";
     const card = !!po.card3d;
     const cash = !!po.payAtHotel;
@@ -2139,43 +2408,113 @@ function OfferDetailModal({
     return "Ödeme bilgisi yok.";
   })();
 
-  // ✅ Price history timeline
-  const hist = Array.isArray(offer.priceHistory) ? offer.priceHistory : [];
-  const histSorted = hist
-    .slice()
-    .sort((a: any, b: any) => (a?.createdAt?.toMillis?.() ?? 0) - (b?.createdAt?.toMillis?.() ?? 0));
+  const nights = useMemo(() => {
+    try {
+      if (!checkIn || !checkOut) return 1;
+      const d1 = new Date(checkIn);
+      const d2 = new Date(checkOut);
+      const diff = Math.floor((d2.setHours(0, 0, 0, 0) - d1.setHours(0, 0, 0, 0)) / 86400000);
+      return diff > 0 ? diff : 1;
+    } catch {
+      return 1;
+    }
+  }, [checkIn, checkOut]);
 
-  const hotelSteps = histSorted.filter((h: any) => h?.actor === "hotel");
-  const guestSteps = histSorted.filter((h: any) => h?.actor === "guest");
+  // ---------- ROOM COUNT MATCH (adetli) ----------
+  const normalizeRoomKey = (s: any) => String(s ?? "").toLowerCase().trim();
 
-  const firstHotelPrice = hotelSteps.length ? Number(hotelSteps[0]?.price ?? 0) : Number(offer.totalPrice ?? 0);
-  const lastHotelPrice = hotelSteps.length ? Number(hotelSteps[hotelSteps.length - 1]?.price ?? 0) : Number(offer.totalPrice ?? 0);
-  const lastPrice = Number(offer.totalPrice ?? 0) || lastHotelPrice || firstHotelPrice;
+  const requestedRooms = useMemo(() => {
+    // 1) roomTypeRows: [{typeKey,count}]
+    const rows = Array.isArray(reqAny.roomTypeRows) ? reqAny.roomTypeRows : null;
+    if (rows?.length) {
+      const m: Record<string, number> = {};
+      rows.forEach((r: any) => {
+        const k = normalizeRoomKey(r?.typeKey ?? r?.roomType ?? r?.name);
+        if (!k) return;
+        m[k] = (m[k] || 0) + safeNum(r?.count, 0);
+      });
+      return m;
+    }
 
-  const minHotelPrice = hotelSteps.length ? Math.min(...hotelSteps.map((x: any) => Number(x.price || 0)).filter((n: number) => n > 0)) : null;
-  const bargained = histSorted.length >= 2 || guestSteps.length > 0;
+    // 2) roomTypeCounts: {standard:1, family:2}
+    const counts = reqAny.roomTypeCounts && typeof reqAny.roomTypeCounts === "object" ? reqAny.roomTypeCounts : null;
+    if (counts) {
+      const m: Record<string, number> = {};
+      Object.entries(counts).forEach(([k, v]: any) => {
+        const kk = normalizeRoomKey(k);
+        if (!kk) return;
+        m[kk] = safeNum(v, 0);
+      });
+      return m;
+    }
 
-  // ✅ Request wanted room types / prefs (tolerant)
-  const wantedRoomTypes: string[] = Array.isArray(reqAny.roomTypes) ? reqAny.roomTypes
-    : Array.isArray(reqAny.roomTypePrefs) ? reqAny.roomTypePrefs
-    : reqAny.roomTypePref ? [String(reqAny.roomTypePref)]
-    : [];
+    // 3) roomTypes: ["standard","family"] (adet bilinmiyorsa 1 say)
+    const arr = Array.isArray(reqAny.roomTypes) ? reqAny.roomTypes : null;
+    if (arr?.length) {
+      const m: Record<string, number> = {};
+      arr.forEach((x: any) => {
+        const k = normalizeRoomKey(x);
+        if (!k) return;
+        m[k] = (m[k] || 0) + 1;
+      });
+      return m;
+    }
 
-  // ✅ Match summary (wanted vs offered)
-  const matchSummary = (() => {
-    const wanted = wantedRoomTypes.map((x) => String(x).toLowerCase().trim()).filter(Boolean);
-    if (!wanted.length) return { wantedLabel: "Fark etmez / belirtilmedi", matchLabel: offerRoomNames.length ? offerRoomNames.join(", ") : "—", ok: null as null | boolean };
+    // 4) tek roomTypePref + roomsCount
+    if (reqAny.roomTypePref && roomsCount > 0) {
+      const k = normalizeRoomKey(reqAny.roomTypePref);
+      if (k) return { [k]: roomsCount };
+    }
 
-    const offered = offerRoomNames.map((x) => x.toLowerCase().trim());
-    const ok = wanted.some((w) => offered.some((o) => o.includes(w) || w.includes(o)));
-    return {
-      wantedLabel: wantedRoomTypes.join(", "),
-      matchLabel: offerRoomNames.length ? offerRoomNames.join(", ") : "—",
-      ok
-    };
-  })();
+    return {} as Record<string, number>;
+  }, [reqAny, roomsCount]);
 
-  // ✅ “Tüm talep alanları” için kopyala
+  const offeredRooms = useMemo(() => {
+    const m: Record<string, number> = {};
+    breakdown.forEach((rb: any) => {
+      const k = normalizeRoomKey(rb?.roomTypeName ?? rb?.roomTypeId ?? rb?.name);
+      if (!k) return;
+      const count = safeNum(rb?.count, 1); // bazı sistemlerde count olabilir
+      m[k] = (m[k] || 0) + Math.max(1, count);
+    });
+    return m;
+  }, [breakdown]);
+
+  const offeredRoomNames = Object.keys(offeredRooms);
+
+  const matchSummary = useMemo(() => {
+    const wantedKeys = Object.keys(requestedRooms);
+    if (!wantedKeys.length) {
+      return {
+        wantedLabel: "Fark etmez / belirtilmedi",
+        matchLabel: offeredRoomNames.length ? offeredRoomNames.join(", ") : "—",
+        ok: null as null | boolean
+      };
+    }
+    const ok = wantedKeys.some((w) => offeredRoomNames.some((o) => o.includes(w) || w.includes(o)));
+    return { wantedLabel: wantedKeys.join(", "), matchLabel: offeredRoomNames.join(", "), ok };
+  }, [requestedRooms, offeredRoomNames]);
+
+  // ---------- ROOM PROFILE OPEN (profil yoksa da aç) ----------
+  const openRoomProfile = (rb: any) => {
+    const rt =
+      hp?.roomTypes?.find((r: any) => r?.id === rb?.roomTypeId) ||
+      hp?.roomTypes?.find((r: any) => String(r?.name || "").toLowerCase() === String(rb?.roomTypeName || "").toLowerCase()) ||
+      null;
+
+    const fallback: RoomTypeProfile = {
+      id: rb?.roomTypeId ?? "room",
+      name: rb?.roomTypeName ?? rb?.name ?? "Oda",
+      shortDescription: rb?.roomShortDescription ?? "",
+      description: rb?.roomDescription ?? "",
+      imageUrls: (rt?.imageUrls ?? rt?.images ?? rt?.gallery ?? rt?.photos ?? [])?.filter?.(Boolean) ?? []
+    } as any;
+
+    setRoomModalRoom((rt as any) || fallback);
+    setRoomModalOpen(true);
+  };
+
+  // ---------- COPY ALL REQUEST ----------
   const copyAllReq = async () => {
     try {
       await navigator.clipboard.writeText(JSON.stringify(reqAny, null, 2));
@@ -2184,28 +2523,261 @@ function OfferDetailModal({
       alert("Kopyalanamadı.");
     }
   };
+function pctChange(prev: number, next: number) {
+  if (!Number.isFinite(prev) || prev <= 0) return null; // % hesaplanamaz
+  const pct = ((next - prev) / prev) * 100;
+  return Math.round(pct * 10) / 10; // 1 ondalık
+}
 
-  // ✅ helper for chips
+function fmtTL(n: number) {
+  return Math.round(n).toLocaleString("tr-TR");
+}
+
+function deltaTone(delta: number) {
+  if (delta > 0) return "border-red-500/35 bg-red-500/10 text-red-200";
+  if (delta < 0) return "border-emerald-500/35 bg-emerald-500/10 text-emerald-200";
+  return "border-slate-700 bg-slate-950/60 text-slate-200";
+}
+
+
+function fmtMoneyTRY(n: any, currency = "TRY") {
+  const val = Number(n);
+  const safe = Number.isFinite(val) ? val : 0;
+  return `${safe.toLocaleString("tr-TR")} ${currency || "TRY"}`;
+}
+
+
+  // ---------- PRICE HISTORY (NE OLURSA OLSUN ÇALIŞAN) ----------
+ type TimelineItem = {
+  actor: "hotel" | "guest" | "system";
+  kind: "initial" | "update" | "counter" | "current" | "accepted" | "rejected" | "info";
+  price: number | null;
+  note: string;
+  createdAt: any | null;
+};
+
+const timeline = useMemo<TimelineItem[]>(() => {
+  const currency = offerCurrency;
+
+  const rawHist = Array.isArray((offerAny as any)?.priceHistory)
+    ? (offerAny as any).priceHistory
+    : [];
+
+  const sorted = rawHist
+    .slice()
+    .map((h: any) => ({
+      actor: h?.actor === "guest" ? "guest" : "hotel",
+      kind: (h?.kind || (h?.actor === "guest" ? "counter" : "update")) as any,
+      price: Number(h?.price ?? NaN),
+      note: h?.note ?? "",
+      createdAt: h?.createdAt ?? null
+    }))
+    .sort((a: any, b: any) => toMillis(a?.createdAt) - toMillis(b?.createdAt));
+
+  const out: TimelineItem[] = [];
+
+  const nowPrice = Number(offerAny?.totalPrice ?? NaN);
+  const hasNowPrice = Number.isFinite(nowPrice) && nowPrice > 0;
+
+  const guestCounter = Number(offerAny?.guestCounterPrice ?? NaN);
+  const hasGuestCounter = Number.isFinite(guestCounter) && guestCounter > 0;
+
+  const hasAccepted = String(offerAny?.status || "") === "accepted";
+  const hasRejected = String(offerAny?.status || "") === "rejected";
+
+  const hasAnyUpdateSignal =
+    !!offerAny?.updatedAt ||
+    hasGuestCounter ||
+    hasAccepted ||
+    hasRejected ||
+    String(offerAny?.status || "") === "countered";
+
+  // ✅ 1) priceHistory VARSA: %100 onu kullan
+  if (sorted.length > 0) {
+    // initial varsa onu başlangıç kabul et
+    const hasInitial = sorted.some((x: any) => x.kind === "initial");
+    if (!hasInitial) {
+      // hotel kayıtları var ama initial yoksa bile, ilk hotel kaydını “initial” gibi göster
+      // (yine de “ilk fiyat” kelimesi yerine “ilk kayıt” diye not düşüyoruz)
+      const first = sorted[0];
+      out.push({
+        actor: first.actor,
+        kind: "initial",
+        price: Number.isFinite(first.price) ? first.price : null,
+        note: "İlk kayıt (history’de initial yok)",
+        createdAt: first.createdAt ?? null
+      });
+      for (let i = 1; i < sorted.length; i++) {
+        const h = sorted[i];
+        out.push({
+          actor: h.actor as any,
+          kind: h.kind === "counter" ? "counter" : "update",
+          price: Number.isFinite(h.price) ? h.price : null,
+          note: h.note || (h.actor === "guest" ? "Misafir karşı teklif" : "Otel fiyat güncelledi"),
+          createdAt: h.createdAt ?? null
+        });
+      }
+    } else {
+      // normal akış
+      for (const h of sorted) {
+        out.push({
+          actor: h.actor as any,
+          kind: h.kind === "initial" ? "initial" : h.kind === "counter" ? "counter" : "update",
+          price: Number.isFinite(h.price) ? h.price : null,
+          note:
+            h.note ||
+            (h.kind === "initial"
+              ? "İlk teklif"
+              : h.kind === "counter"
+              ? "Misafir karşı teklif"
+              : "Otel fiyat güncelledi"),
+          createdAt: h.createdAt ?? null
+        });
+      }
+    }
+
+    // ✅ her durumda “Güncel fiyat” satırı: liveOffer.totalPrice ile (history’den bağımsız)
+    // Ama aynıysa ekleme.
+    const lastHistPrice = (() => {
+      const last = [...out].reverse().find((x) => x.price && x.price > 0);
+      return last?.price ?? null;
+    })();
+
+    if (hasNowPrice && (!lastHistPrice || lastHistPrice !== nowPrice)) {
+      out.push({
+        actor: "system",
+        kind: "current",
+        price: nowPrice,
+        note: "Güncel fiyat (canlı)",
+        createdAt: offerAny?.updatedAt ?? null
+      });
+    }
+
+    if (hasAccepted) {
+      out.push({
+        actor: "system",
+        kind: "accepted",
+        price: hasNowPrice ? nowPrice : lastHistPrice,
+        note: "Misafir teklifi kabul etti",
+        createdAt: offerAny?.acceptedAt ?? null
+      });
+    }
+    if (hasRejected) {
+      out.push({
+        actor: "system",
+        kind: "rejected",
+        price: hasNowPrice ? nowPrice : lastHistPrice,
+        note: "Misafir teklifi reddetti",
+        createdAt: offerAny?.rejectedAt ?? null
+      });
+    }
+
+    return out;
+  }
+
+  // ✅ 2) priceHistory YOKSA: “ilk fiyat” asla uydurulmayacak
+  // Eğer update/pazarlık sinyali yoksa (yani tek fiyat senaryosu) -> mevcut fiyat "Tek fiyat" diye yazılır.
+  if (!hasAnyUpdateSignal) {
+    if (hasNowPrice) {
+      out.push({
+        actor: "hotel",
+        kind: "initial",
+        price: nowPrice,
+        note: "Tek fiyat (history kaydı yok)",
+        createdAt: offerAny?.createdAt ?? null
+      });
+    } else {
+      out.push({
+        actor: "system",
+        kind: "info",
+        price: null,
+        note: "Fiyat bilgisi bulunamadı.",
+        createdAt: offerAny?.createdAt ?? null
+      });
+    }
+    return out;
+  }
+
+  // Update/pazarlık sinyali var ama history yok -> ilk fiyat BİLİNMİYOR
+  out.push({
+    actor: "system",
+    kind: "info",
+    price: null,
+    note: "İlk fiyat kaydı yok. (Otel priceHistory yazmadığı için başlangıç fiyatı bilinmiyor.)",
+    createdAt: offerAny?.createdAt ?? null
+  });
+
+  if (hasGuestCounter) {
+    out.push({
+      actor: "guest",
+      kind: "counter",
+      price: guestCounter,
+      note: "Misafir karşı teklif",
+      createdAt: offerAny?.guestCounterAt ?? null
+    });
+  }
+
+  if (hasNowPrice) {
+    out.push({
+      actor: "system",
+      kind: "current",
+      price: nowPrice,
+      note: "Güncel fiyat (canlı)",
+      createdAt: offerAny?.updatedAt ?? null
+    });
+  }
+
+  if (hasAccepted) {
+    out.push({
+      actor: "system",
+      kind: "accepted",
+      price: hasNowPrice ? nowPrice : null,
+      note: "Misafir teklifi kabul etti",
+      createdAt: offerAny?.acceptedAt ?? null
+    });
+  }
+  if (hasRejected) {
+    out.push({
+      actor: "system",
+      kind: "rejected",
+      price: hasNowPrice ? nowPrice : null,
+      note: "Misafir teklifi reddetti",
+      createdAt: offerAny?.rejectedAt ?? null
+    });
+  }
+
+  return out;
+}, [offerAny, offerCurrency]);
+
+
+  const firstHotelPrice = useMemo(() => {
+    const h = timeline.find((x: any) => x.actor === "hotel");
+    return Number(h?.price ?? offerAny?.totalPrice ?? 0) || 0;
+  }, [timeline, offerAny?.totalPrice]);
+
+  const lastPrice = Number(offerAny?.totalPrice ?? 0) || firstHotelPrice;
+
+  const minHotelPrice = useMemo(() => {
+    const hs = timeline.filter((x: any) => x.actor === "hotel").map((x: any) => Number(x.price || 0)).filter((n: number) => n > 0);
+    return hs.length ? Math.min(...hs) : null;
+  }, [timeline]);
+
+  const bargained = timeline.some((x: any) => x.actor === "guest") || timeline.filter((x: any) => x.actor === "hotel").length >= 2;
+
+  // ---------- UI CHIP ----------
   const Chip = ({ children, tone = "slate" }: { children: any; tone?: "slate" | "emerald" | "amber" | "red" | "sky" }) => {
     const cls =
-      tone === "emerald" ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-200"
-      : tone === "amber" ? "border-amber-500/35 bg-amber-500/10 text-amber-200"
-      : tone === "red" ? "border-red-500/35 bg-red-500/10 text-red-200"
-      : tone === "sky" ? "border-sky-500/35 bg-sky-500/10 text-sky-200"
-      : "border-slate-700 bg-slate-950/60 text-slate-200";
+      tone === "emerald"
+        ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-200"
+        : tone === "amber"
+        ? "border-amber-500/35 bg-amber-500/10 text-amber-200"
+        : tone === "red"
+        ? "border-red-500/35 bg-red-500/10 text-red-200"
+        : tone === "sky"
+        ? "border-sky-500/35 bg-sky-500/10 text-sky-200"
+        : "border-slate-700 bg-slate-950/60 text-slate-200";
     return <span className={`inline-flex items-center rounded-md border px-2 py-1 text-[0.72rem] ${cls}`}>{children}</span>;
   };
-
-  // ✅ safe labels
-  const reqChildrenAges: number[] = Array.isArray(reqAny.childrenAges) ? reqAny.childrenAges : [];
-  const reqNotes = reqAny.notes || reqAny.note || reqAny.generalNote || reqAny.activities || "—";
-  const reqBoardPref = reqAny.boardPref || reqAny.boardType || reqAny.mealPlan || "—";
-  const reqHotelPref = reqAny.hotelPref || reqAny.hotelType || "—";
-  const reqBudgetMin = reqAny.budgetMin ?? reqAny.minBudget ?? "—";
-  const reqBudgetMax = reqAny.budgetMax ?? reqAny.maxBudget ?? "—";
-  const reqQualityScore = reqAny.qualityScore ?? "—";
-  const reqCities = Array.isArray(reqAny.cities) ? reqAny.cities.join(", ") : safeStr(reqAny.city);
-
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60">
@@ -2217,15 +2789,26 @@ function OfferDetailModal({
             <div className="space-y-1">
               <h2 className="text-base font-semibold text-slate-100">Otel Teklifi — Detay / Kanıt</h2>
               <p className="text-[0.75rem] text-slate-500">
-                Teklif #{offer.id} • {offer.hotelName || hotel?.displayName || "Otel"}
+                Teklif #{offerAny.id} • {offerAny.hotelName || liveHotel?.displayName || "Otel"}
+                {offerLoading ? " • (Teklif güncelleniyor…)" : ""}
+                {reqLoading ? " • (Talep okunuyor…)" : ""}
+                {hotelLoading ? " • (Otel verisi okunuyor…)" : ""}
               </p>
 
               <div className="flex flex-wrap gap-2 pt-1">
-                <Chip tone="sky">Son fiyat: <b className="ml-1">{money(lastPrice, offer.currency)}</b></Chip>
-                {firstHotelPrice ? <Chip>Başlangıç: <b className="ml-1">{money(firstHotelPrice, offer.currency)}</b></Chip> : null}
-                {minHotelPrice != null ? <Chip tone="emerald">En düşük: <b className="ml-1">{money(minHotelPrice, offer.currency)}</b></Chip> : null}
+                <Chip tone="sky">
+                  Son fiyat (canlı): <b className="ml-1">{money(lastPrice, offerCurrency)}</b>
+                </Chip>
+                <Chip>
+                  Başlangıç: <b className="ml-1">{money(firstHotelPrice, offerCurrency)}</b>
+                </Chip>
+                {minHotelPrice != null ? (
+                  <Chip tone="emerald">
+                    En düşük: <b className="ml-1">{money(minHotelPrice, offerCurrency)}</b>
+                  </Chip>
+                ) : null}
                 <Chip tone={bargained ? "amber" : "slate"}>{bargained ? "Pazarlık / güncelleme var" : "Tek fiyat"}</Chip>
-                {matchSummary.ok === true && <Chip tone="emerald">Talebinle uyumlu oda</Chip>}
+                {matchSummary.ok === true && <Chip tone="emerald">Oda uyumlu</Chip>}
                 {matchSummary.ok === false && <Chip tone="red">Oda tercihi farklı olabilir</Chip>}
               </div>
             </div>
@@ -2286,7 +2869,7 @@ function OfferDetailModal({
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <h2 className="text-base font-semibold text-slate-100">
-                      {hotel?.displayName || offer.hotelName || "Otel"}
+                      {liveHotel?.displayName || offerAny.hotelName || "Otel"}
                     </h2>
                     {hp?.starRating ? (
                       <p className="text-[0.8rem] text-amber-300 mt-1">{hp.starRating}★</p>
@@ -2321,7 +2904,6 @@ function OfferDetailModal({
                   </div>
                 ) : null}
 
-                {/* Otelin sundukları */}
                 <div className="mt-3 grid md:grid-cols-2 gap-2">
                   <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                     <p className="text-[0.75rem] text-slate-400 mb-1">Ödeme</p>
@@ -2337,7 +2919,7 @@ function OfferDetailModal({
                   <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                     <p className="text-[0.75rem] text-slate-400 mb-2">Özellikler</p>
                     <div className="flex flex-wrap gap-2">
-                      {hp!.features!.slice(0, 18).map((f, i) => (
+                      {hp!.features!.slice(0, 24).map((f, i) => (
                         <span key={i} className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[0.72rem] text-slate-200">
                           {String(f)}
                         </span>
@@ -2345,29 +2927,29 @@ function OfferDetailModal({
                     </div>
                   </div>
                 )}
-
-                {hp?.youtubeUrl ? (
-                  <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                    <p className="text-[0.75rem] text-slate-400 mb-2">Tanıtım videosu</p>
-                    <div className="aspect-video rounded-lg overflow-hidden border border-slate-800">
-                      <iframe
-                        className="w-full h-full"
-                        src={hp.youtubeUrl.replace("watch?v=", "embed/")}
-                        title="Otel tanıtım videosu"
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                        allowFullScreen
-                      />
-                    </div>
-                  </div>
-                ) : null}
               </div>
+
+              {hp?.youtubeUrl ? (
+                <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
+                  <p className="text-[0.85rem] font-semibold text-slate-100 mb-2">Tanıtım videosu</p>
+                  <div className="aspect-video rounded-lg overflow-hidden border border-slate-800">
+                    <iframe
+                      className="w-full h-full"
+                      src={hp.youtubeUrl.replace("watch?v=", "embed/")}
+                      title="Otel tanıtım videosu"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                    />
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
 
-          {/* ✅ Misafir Talebi: 100% */}
+          {/* Misafir talebi */}
           <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4 space-y-3">
             <div className="flex items-center justify-between gap-2">
-              <p className="text-sm font-semibold text-slate-100">Misafir Talebi (Veritabanındaki bilgiler)</p>
+              <p className="text-sm font-semibold text-slate-100">Misafir Talebi (DB)</p>
               <button
                 type="button"
                 onClick={copyAllReq}
@@ -2377,60 +2959,47 @@ function OfferDetailModal({
               </button>
             </div>
 
-            {/* Hızlı özet */}
             <div className="grid md:grid-cols-4 gap-2">
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                <p className="text-[0.72rem] text-slate-400">Şehir(ler)</p>
-                <p className="text-slate-100 font-semibold mt-1">{safeStr(reqCities)}</p>
+                <p className="text-[0.72rem] text-slate-400">Şehir</p>
+                <p className="text-slate-100 font-semibold mt-1">{safeStr(reqCity)}{reqDistrict ? ` / ${reqDistrict}` : ""}</p>
               </div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                 <p className="text-[0.72rem] text-slate-400">Tarih</p>
                 <p className="text-slate-100 font-semibold mt-1">
-                  {safeStr(reqAny.dateFrom || reqAny.checkIn)} → {safeStr(reqAny.dateTo || reqAny.checkOut)} ({nights} gece)
+                  {safeStr(checkIn)} → {safeStr(checkOut)} ({nights} gece)
                 </p>
               </div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                <p className="text-[0.72rem] text-slate-400">Kişi</p>
+                <p className="text-[0.72rem] text-slate-400">Kişi / Oda</p>
                 <p className="text-slate-100 font-semibold mt-1">
-                  {safeStr(reqAny.paxAdults ?? reqAny.adults, "0")} yetişkin • {safeStr(reqAny.paxChildren ?? reqAny.childrenCount, "0")} çocuk
+                  {adults} yetişkin • {children} çocuk • {roomsCount} oda
                 </p>
-                {reqChildrenAges.length ? <p className="text-[0.75rem] text-slate-300 mt-1">Yaş: {reqChildrenAges.join(", ")}</p> : null}
+                {childrenAges.length ? <p className="text-[0.75rem] text-slate-300 mt-1">Yaş: {childrenAges.join(", ")}</p> : null}
               </div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                <p className="text-[0.72rem] text-slate-400">Oda tercihi</p>
-                <p className="text-slate-100 font-semibold mt-1">{wantedRoomTypes.length ? wantedRoomTypes.join(", ") : "Belirtilmedi"}</p>
+                <p className="text-[0.72rem] text-slate-400">Tercihler</p>
+                <p className="text-slate-100 font-semibold mt-1">{safeStr(boardPref)} • {safeStr(hotelPref)}</p>
+                <p className="text-[0.75rem] text-slate-300 mt-1">Oda: {safeStr(roomPref)}</p>
               </div>
             </div>
 
             <div className="grid md:grid-cols-3 gap-2">
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                <p className="text-[0.72rem] text-slate-400">Board / Pansiyon</p>
-                <p className="text-slate-100 font-semibold mt-1">{safeStr(reqBoardPref)}</p>
-              </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                <p className="text-[0.72rem] text-slate-400">Otel tercihi</p>
-                <p className="text-slate-100 font-semibold mt-1">{safeStr(reqHotelPref)}</p>
-              </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                 <p className="text-[0.72rem] text-slate-400">Bütçe</p>
-                <p className="text-slate-100 font-semibold mt-1">
-                  {safeStr(reqBudgetMin)} – {safeStr(reqBudgetMax)} {safeStr(reqAny.currency, "TRY")}
-                </p>
+                <p className="text-slate-100 font-semibold mt-1">{safeStr(budgetMin)} – {safeStr(budgetMax)} {safeStr(currencyPref, "TRY")}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 md:col-span-2">
+                <p className="text-[0.72rem] text-slate-400">İstenen özellikler</p>
+                <p className="text-slate-100 mt-1 whitespace-pre-wrap">{safeStr(wantedFeatures)}</p>
               </div>
             </div>
 
-            <div className="grid md:grid-cols-2 gap-2">
-              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                <p className="text-[0.72rem] text-slate-400">Notlar / İstekler</p>
-                <p className="text-slate-100 mt-1 whitespace-pre-wrap">{safeStr(reqNotes)}</p>
-              </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                <p className="text-[0.72rem] text-slate-400">Quality Score</p>
-                <p className="text-slate-100 font-semibold mt-1">{safeStr(reqQualityScore)}</p>
-              </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+              <p className="text-[0.72rem] text-slate-400">Notlar / İstekler (tam)</p>
+              <p className="text-slate-100 mt-1 whitespace-pre-wrap">{safeStr(notesAll || "—")}</p>
             </div>
 
-            {/* Raw JSON */}
             <details className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
               <summary className="cursor-pointer text-[0.8rem] text-slate-200 font-semibold">Tüm alanları aç (JSON)</summary>
               <pre className="mt-3 whitespace-pre-wrap text-[0.72rem] text-slate-300 overflow-x-auto">
@@ -2439,35 +3008,58 @@ function OfferDetailModal({
             </details>
           </div>
 
-          {/* ✅ Eşleşme Özeti */}
-          <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
-            <p className="text-sm font-semibold text-slate-100 mb-2">Oda Eşleşmesi</p>
-            <div className="grid md:grid-cols-3 gap-2">
+          {/* Oda eşleşmesi */}
+          <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4 space-y-2">
+            <p className="text-sm font-semibold text-slate-100">Oda Eşleşmesi (adet)</p>
+
+            <div className="grid md:grid-cols-2 gap-2">
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                <p className="text-[0.72rem] text-slate-400">Senin istediğin</p>
-                <p className="text-slate-100 font-semibold mt-1">{matchSummary.wantedLabel}</p>
+                <p className="text-[0.72rem] text-slate-400 mb-2">Misafir istedi</p>
+                {Object.keys(requestedRooms).length ? (
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(requestedRooms).map(([k, n]) => (
+                      <span key={k} className="inline-flex items-center rounded-md border border-slate-700 bg-slate-950/60 px-2 py-1 text-[0.72rem] text-slate-200">
+                        {k} • <b className="ml-1 text-white">{n}</b>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-slate-400 text-[0.8rem]">Belirtilmedi</div>
+                )}
               </div>
+
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                <p className="text-[0.72rem] text-slate-400">Otelin sunduğu</p>
-                <p className="text-slate-100 font-semibold mt-1">{matchSummary.matchLabel}</p>
+                <p className="text-[0.72rem] text-slate-400 mb-2">Otel verdi</p>
+                {Object.keys(offeredRooms).length ? (
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(offeredRooms).map(([k, n]) => (
+                      <span key={k} className="inline-flex items-center rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[0.72rem] text-emerald-200">
+                        {k} • <b className="ml-1">{n}</b>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-slate-400 text-[0.8rem]">Oda kırılımı yok</div>
+                )}
               </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                <p className="text-[0.72rem] text-slate-400">Sonuç</p>
-                <p className={`font-extrabold mt-1 ${matchSummary.ok === true ? "text-emerald-300" : matchSummary.ok === false ? "text-red-300" : "text-slate-200"}`}>
-                  {matchSummary.ok === true ? "Uyumlu" : matchSummary.ok === false ? "Farklı olabilir" : "Belirsiz"}
-                </p>
-              </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+              <p className="text-[0.72rem] text-slate-400">Sonuç</p>
+              <p className={`font-extrabold mt-1 ${matchSummary.ok === true ? "text-emerald-300" : matchSummary.ok === false ? "text-red-300" : "text-slate-200"}`}>
+                {matchSummary.ok === true ? "Uyumlu" : matchSummary.ok === false ? "Farklı olabilir" : "Belirsiz"}
+              </p>
             </div>
           </div>
 
-          {/* ✅ Fiyat & oda kırılımı */}
+          {/* Oda / fiyat kırılımı */}
           <div className="rounded-2xl border border-slate-800 bg-slate-950/90 p-4 space-y-2">
             <p className="text-slate-100 font-semibold text-[0.9rem]">Oda / Fiyat Kırılımı</p>
 
             <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
-              <p className="text-[0.75rem] text-slate-400">Teklif toplam</p>
-              <p className="text-lg font-extrabold text-emerald-200">{money(offer.totalPrice, offer.currency)}</p>
-              {offer.note ? <p className="text-[0.8rem] text-slate-200 mt-2">Otel notu: <span className="text-slate-300">{offer.note}</span></p> : null}
+              <p className="text-[0.75rem] text-slate-400">Teklif toplam (canlı)</p>
+              <p className="text-lg font-extrabold text-emerald-200">{money(lastPrice, offerCurrency)}</p>
+              {offerAny.note ? <p className="text-[0.8rem] text-slate-200 mt-2">Otel notu: <span className="text-slate-300">{offerAny.note}</span></p> : null}
             </div>
 
             {breakdown.length ? (
@@ -2476,61 +3068,45 @@ function OfferDetailModal({
                   const n = rb.nights ?? nights;
                   const nightly = Number(rb.nightlyPrice ?? 0);
                   const total = Number(rb.totalPrice ?? nightly * n);
+                  const label = rb.roomTypeName || rb.roomTypeId || `Oda ${idx + 1}`;
 
-                  const rtProfile =
-                    hp?.roomTypes?.find((rt) => rt.id === rb.roomTypeId || rt.name === rb.roomTypeName) || null;
-
-                  const label = rb.roomTypeName || rtProfile?.name || `Oda ${idx + 1}`;
+                  const hasProfile =
+                    !!hp?.roomTypes?.find((rt: any) => rt.id === rb.roomTypeId || rt.name === rb.roomTypeName);
 
                   return (
-                   <button
-  key={idx}
-  type="button"
-  onClick={() => {
-    if (rtProfile) {
-      setRoomModalRoom(rtProfile);
-      setRoomModalOpen(true);
-    }
-  }}
-  className={`rounded-2xl border border-slate-800 bg-slate-950/60 p-4 text-left
-    hover:bg-white/[0.04] hover:border-emerald-500/30 transition
-    ${rtProfile ? "cursor-pointer" : "cursor-default opacity-90"}`}
-  title={rtProfile ? "Oda detayını gör" : "Detay yok"}
->
-  <div className="flex items-start justify-between gap-3">
-    <div>
-      <div className="text-slate-100 text-[0.95rem] font-extrabold flex items-center gap-2">
-        {label}
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => openRoomProfile(rb)}
+                      className={`rounded-2xl border border-slate-800 bg-slate-950/60 p-4 text-left hover:bg-white/[0.04] hover:border-emerald-500/30 transition`}
+                      title="Oda detayını gör"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-slate-100 text-[0.95rem] font-extrabold flex items-center gap-2">
+                            {label}
+                            <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[0.7rem] ${
+                              hasProfile ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200" : "border-slate-700 bg-slate-950/60 text-slate-300"
+                            }`}>
+                              Detay ▶
+                            </span>
+                          </div>
 
-        {/* ✅ Tıklama göstergesi */}
-        {rtProfile ? (
-          <span className="inline-flex items-center rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[0.7rem] text-emerald-200">
-            Detay ▶
-          </span>
-        ) : (
-          <span className="inline-flex items-center rounded-md border border-slate-700 bg-slate-950/60 px-2 py-0.5 text-[0.7rem] text-slate-300">
-            Detay yok
-          </span>
-        )}
-      </div>
+                          <div className="text-[0.78rem] text-slate-300 mt-1">
+                            {n} gece × {nightly.toLocaleString("tr-TR")} {offerCurrency}
+                          </div>
 
-      <div className="text-[0.78rem] text-slate-300 mt-1">
-        {n} gece × {nightly.toLocaleString("tr-TR")} {offer.currency}
-      </div>
+                          <div className="text-[0.72rem] text-slate-500 mt-2">
+                            👆 Tıkla: oda detayını gör
+                          </div>
+                        </div>
 
-      {/* ✅ Alt ipucu */}
-      <div className="text-[0.72rem] text-slate-500 mt-2">
-        {rtProfile ? "👆 Tıkla: oda detayını gör" : "Oda profili bulunamadı"}
-      </div>
-    </div>
-
-    <div className="text-right">
-      <div className="text-[0.72rem] text-slate-400">Toplam</div>
-      <div className="text-emerald-300 text-base font-extrabold">{money(total, offer.currency)}</div>
-    </div>
-  </div>
-</button>
-
+                        <div className="text-right">
+                          <div className="text-[0.72rem] text-slate-400">Toplam</div>
+                          <div className="text-emerald-300 text-base font-extrabold">{money(total, offerCurrency)}</div>
+                        </div>
+                      </div>
+                    </button>
                   );
                 })}
               </div>
@@ -2541,42 +3117,83 @@ function OfferDetailModal({
             )}
           </div>
 
-          {/* ✅ Fiyat geçmişi / pazarlık */}
+          {/* ✅ Fiyat geçmişi / pazarlık — NE OLURSA OLSUN */}
           <div className="rounded-2xl border border-slate-800 bg-slate-950/90 p-4 space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <p className="text-slate-100 font-semibold text-[0.9rem]">Fiyat Geçmişi / Pazarlık</p>
-              <p className="text-[0.75rem] text-slate-400">Adım: <b className="text-slate-200">{histSorted.length}</b></p>
+              <p className="text-slate-100 font-semibold text-[0.9rem]">Fiyat Geçmişi / Pazarlık (canlı)</p>
+              <p className="text-[0.75rem] text-slate-400">
+                Adım: <b className="text-slate-200">{timeline.length}</b>
+              </p>
             </div>
 
-            {histSorted.length ? (
-              <div className="grid md:grid-cols-2 gap-2">
-                {histSorted.slice(-12).map((h: any, i: number) => {
-                  const t = h?.createdAt?.toDate?.() ? h.createdAt.toDate().toLocaleString("tr-TR") : "";
-                  const who = h.actor === "hotel" ? "Otel" : "Sen";
-                  const kind =
-                    h.kind === "initial" ? "İlk fiyat" :
-                    h.kind === "update" ? "Fiyat güncellendi" : "Karşı teklif";
+            <div className="grid md:grid-cols-2 gap-2">
+            {timeline.map((h: any, i: number) => {
+  const price = Number(h?.price ?? 0) || 0;
 
-                  const tone = h.actor === "hotel" ? "sky" : "amber";
+  // bir önceki "fiyatlı" adımı bul (system satırları vs olabilir)
+  
 
-                  return (
-                    <div key={i} className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="text-slate-100 font-semibold">
-                          <span className="mr-2">{who}</span>
-                          <span className="text-slate-300">{kind}</span>
-                        </div>
-                        <Chip tone={tone as any}>{money(h.price, offer.currency)}</Chip>
-                      </div>
-                      {t ? <div className="text-[0.7rem] text-slate-500 mt-2">{t}</div> : null}
-                      {h.note ? <div className="text-[0.8rem] text-slate-200 mt-2">Not: <span className="text-slate-300">{h.note}</span></div> : null}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
+const prevPrice = i > 0 ? timeline[i - 1]?.price : null;
+const curPrice = h.price;
+
+const canDelta =
+  typeof prevPrice === "number" &&
+  typeof curPrice === "number" &&
+  prevPrice > 0 &&
+  curPrice > 0;
+
+
+
+const delta = canDelta ? curPrice - prevPrice : null;
+const pct = canDelta ? ((curPrice - prevPrice) / prevPrice) * 100 : null;
+
+const deltaLabel =
+  delta == null || delta === 0
+    ? ""
+    : `${delta > 0 ? "+" : ""}${Math.round(delta).toLocaleString("tr-TR")} ${offerCurrency}`;
+
+const pctLabel =
+  pct == null || pct === 0
+    ? ""
+    : `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%`;
+
+        
+
+  return (
+    <div key={i} className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-slate-100 font-semibold">
+          <span className="mr-2">{h.actor === "hotel" ? "Otel" : h.actor === "guest" ? "Sen" : "Sistem"}</span>
+          <span className="text-slate-300">
+            {h.kind === "initial" ? "İlk fiyat" : h.kind === "update" ? "Fiyat güncellendi" : h.kind === "counter" ? "Karşı teklif" : String(h.kind)}
+          </span>
+        </div>
+
+        {/* Sağ üst: fiyat + rozetler */}
+        <div className="flex items-center gap-2">
+          {/* mevcut fiyat */}
+          <span className="inline-flex items-center rounded-md border border-sky-500/35 bg-sky-500/10 px-2 py-1 text-[0.72rem] text-sky-200">
+            {money(price, offerCurrency)}
+          </span>
+
+
+      
+        </div>
+      </div>
+
+      {/* zaman + not */}
+      {toTR(h.createdAt) ? <div className="text-[0.7rem] text-slate-500 mt-2">{toTR(h.createdAt)}</div> : null}
+      {h.note ? <div className="text-[0.8rem] text-slate-200 mt-2">Not: <span className="text-slate-300">{String(h.note)}</span></div> : null}
+    </div>
+  );
+})}
+
+            </div>
+
+            {/* ekstra güven: timeline 1 satırdan küçük olamaz ama yine de */}
+            {timeline.length === 0 && (
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-slate-300">
-                Fiyat geçmişi yok. Bu teklif tek fiyatla verilmiş.
+                Timeline üretilemedi. (Beklenmeyen durum) — yine de son fiyat: {money(lastPrice, offerCurrency)}
               </div>
             )}
           </div>
@@ -2604,12 +3221,17 @@ function OfferDetailModal({
       {roomModalOpen && roomModalRoom ? (
         <RoomTypeModal
           room={roomModalRoom}
-          onClose={() => { setRoomModalOpen(false); setRoomModalRoom(null); }}
+          onClose={() => {
+            setRoomModalOpen(false);
+            setRoomModalRoom(null);
+          }}
         />
       ) : null}
     </>
   );
 }
+
+
 
 
 function RoomTypeModal({ room, onClose }: { room: RoomTypeProfile; onClose: () => void }) {
@@ -2955,13 +3577,14 @@ function PackageOffersModal({
 
           <div className="flex flex-wrap gap-2 justify-end">
             {/* ✅ SADECE expired iken yönetim butonları */}
-            {st === "expired" && (
-              <>
-                <button onClick={onRestart} className="btn btn-warning">Yeniden başlat</button>
-                <button onClick={onEdit} className="btn btn-sky">Düzenle</button>
-                <button onClick={onDelete} className="btn btn-danger">Sil</button>
-              </>
-            )}
+           {st === "expired" ? (
+  <div className="flex flex-wrap justify-end gap-2 mt-2">
+    <button type="button" onClick={onRestart} className="btn btn-warning">Yeniden başlat</button>
+    <button type="button" onClick={onEdit} className="btn btn-sky">Düzenle</button>
+    <button type="button" onClick={onDelete} className="btn btn-danger">Sil</button>
+  </div>
+) : null}
+
 
             <button onClick={onClose} className="btn btn-outline">Kapat ✕</button>
           </div>
@@ -3252,3 +3875,7 @@ function Mini({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
+
+
+
