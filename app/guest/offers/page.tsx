@@ -7,6 +7,7 @@ import { Protected } from "@/components/Protected";
 import { useAuth } from "@/context/AuthContext";
 import { getFirestoreDb } from "@/lib/firebase/client";
 
+
 import {
   collection,
   getDocs,
@@ -619,10 +620,21 @@ async function handleCounterSubmit(e: FormEvent<HTMLFormElement>, offer: GuestOf
 
     // 1) Teklifi güncelle
     await updateDoc(doc(db, "offers", offer.id), {
-      guestCounterPrice: value,
-      status: "countered",
-      guestCounterAt: serverTimestamp()
-    });
+  guestCounterPrice: value,
+  status: "countered",
+  guestCounterAt: serverTimestamp(),
+  priceHistory: arrayUnion({
+    actor: "guest",
+    kind: "counter",
+    price: Number(value),
+    note: "Misafir karşı teklif",
+    createdAt: serverTimestamp()
+  }),
+});
+
+
+
+  
 
     // 2) Price history (arrayUnion)
     await pushOfferPriceHistory(db, offer.id, {
@@ -2137,6 +2149,9 @@ function MiniStat({ title, value }: { title: string; value: string }) {
 }
 
 /* -------------------- HOTEL OFFER DETAIL MODAL -------------------- */
+// =====================
+// OfferDetailModal (PART 1/3) — state + helpers + live subscriptions + normalize
+// =====================
 function OfferDetailModal({
   offer,
   hotel,
@@ -2201,6 +2216,19 @@ function OfferDetailModal({
     } catch {
       return "";
     }
+  };
+
+  // yüzde değişim / TL fark rozetleri için
+  const pctChange = (prev: number, next: number) => {
+    if (!Number.isFinite(prev) || prev <= 0) return null;
+    const pct = ((next - prev) / prev) * 100;
+    return Math.round(pct * 10) / 10; // 1 ondalık
+  };
+  const fmtTL = (n: number) => Math.round(n).toLocaleString("tr-TR");
+  const deltaTone = (delta: number) => {
+    if (delta > 0) return "border-red-500/35 bg-red-500/10 text-red-200";
+    if (delta < 0) return "border-emerald-500/35 bg-emerald-500/10 text-emerald-200";
+    return "border-slate-700 bg-slate-950/60 text-slate-200";
   };
 
   // ---------------- LIVE OFFER ----------------
@@ -2313,17 +2341,15 @@ function OfferDetailModal({
   const reqAny: any = liveReq || {};
   const hp = liveHotel?.hotelProfile;
 
-  // ✅ Hotel images
-// ✅ Hotel görselleri (imageUrls + images + gallery + photos) — TS hatasız
-const hotelImages = useMemo(() => {
-  const list = [
-    ...(hp?.imageUrls ?? []),
-    ...((((hp as any)?.images ?? []) as string[])),
-    ...((((hp as any)?.gallery ?? []) as string[])),
-    ...((((hp as any)?.photos ?? []) as string[]))
-  ];
-  return list.filter(Boolean);
-}, [hp]);
+  // ✅ Hotel görselleri (imageUrls + images + gallery + photos) — TS hatasız
+  const hotelImages = useMemo(() => {
+    const a = (hp?.imageUrls ?? []) as string[];
+    const b = (((hp as any)?.images ?? []) as string[]) || [];
+    const c = (((hp as any)?.gallery ?? []) as string[]) || [];
+    const d = (((hp as any)?.photos ?? []) as string[]) || [];
+    return [...a, ...b, ...c, ...d].filter(Boolean);
+  }, [hp]);
+
   const [activeHotelImage, setActiveHotelImage] = useState(0);
   useEffect(() => {
     if (activeHotelImage >= hotelImages.length) setActiveHotelImage(0);
@@ -2339,6 +2365,7 @@ const hotelImages = useMemo(() => {
     setImgOpen(false);
     setImgSrc(null);
   };
+
   // ---------- REQUEST NORMALIZATION (çok toleranslı) ----------
   const reqCity = reqAny.city ?? reqAny.requestCity ?? reqAny.destinationCity ?? "—";
   const reqDistrict = reqAny.district ?? reqAny.requestDistrict ?? reqAny.destinationDistrict ?? null;
@@ -2424,7 +2451,6 @@ const hotelImages = useMemo(() => {
   const normalizeRoomKey = (s: any) => String(s ?? "").toLowerCase().trim();
 
   const requestedRooms = useMemo(() => {
-    // 1) roomTypeRows: [{typeKey,count}]
     const rows = Array.isArray(reqAny.roomTypeRows) ? reqAny.roomTypeRows : null;
     if (rows?.length) {
       const m: Record<string, number> = {};
@@ -2436,7 +2462,6 @@ const hotelImages = useMemo(() => {
       return m;
     }
 
-    // 2) roomTypeCounts: {standard:1, family:2}
     const counts = reqAny.roomTypeCounts && typeof reqAny.roomTypeCounts === "object" ? reqAny.roomTypeCounts : null;
     if (counts) {
       const m: Record<string, number> = {};
@@ -2448,7 +2473,6 @@ const hotelImages = useMemo(() => {
       return m;
     }
 
-    // 3) roomTypes: ["standard","family"] (adet bilinmiyorsa 1 say)
     const arr = Array.isArray(reqAny.roomTypes) ? reqAny.roomTypes : null;
     if (arr?.length) {
       const m: Record<string, number> = {};
@@ -2460,7 +2484,6 @@ const hotelImages = useMemo(() => {
       return m;
     }
 
-    // 4) tek roomTypePref + roomsCount
     if (reqAny.roomTypePref && roomsCount > 0) {
       const k = normalizeRoomKey(reqAny.roomTypePref);
       if (k) return { [k]: roomsCount };
@@ -2474,7 +2497,7 @@ const hotelImages = useMemo(() => {
     breakdown.forEach((rb: any) => {
       const k = normalizeRoomKey(rb?.roomTypeName ?? rb?.roomTypeId ?? rb?.name);
       if (!k) return;
-      const count = safeNum(rb?.count, 1); // bazı sistemlerde count olabilir
+      const count = safeNum(rb?.count, 1);
       m[k] = (m[k] || 0) + Math.max(1, count);
     });
     return m;
@@ -2498,8 +2521,8 @@ const hotelImages = useMemo(() => {
   // ---------- ROOM PROFILE OPEN (profil yoksa da aç) ----------
   const openRoomProfile = (rb: any) => {
     const rt =
-      hp?.roomTypes?.find((r: any) => r?.id === rb?.roomTypeId) ||
-      hp?.roomTypes?.find((r: any) => String(r?.name || "").toLowerCase() === String(rb?.roomTypeName || "").toLowerCase()) ||
+      (hp as any)?.roomTypes?.find?.((r: any) => r?.id === rb?.roomTypeId) ||
+      (hp as any)?.roomTypes?.find?.((r: any) => String(r?.name || "").toLowerCase() === String(rb?.roomTypeName || "").toLowerCase()) ||
       null;
 
     const fallback: RoomTypeProfile = {
@@ -2507,14 +2530,13 @@ const hotelImages = useMemo(() => {
       name: rb?.roomTypeName ?? rb?.name ?? "Oda",
       shortDescription: rb?.roomShortDescription ?? "",
       description: rb?.roomDescription ?? "",
-      imageUrls: (rt?.imageUrls ?? rt?.images ?? rt?.gallery ?? rt?.photos ?? [])?.filter?.(Boolean) ?? []
+      imageUrls: (((rt as any)?.imageUrls ?? (rt as any)?.images ?? (rt as any)?.gallery ?? (rt as any)?.photos ?? []) as string[]).filter(Boolean)
     } as any;
 
     setRoomModalRoom((rt as any) || fallback);
     setRoomModalOpen(true);
   };
 
-  // ---------- COPY ALL REQUEST ----------
   const copyAllReq = async () => {
     try {
       await navigator.clipboard.writeText(JSON.stringify(reqAny, null, 2));
@@ -2523,107 +2545,69 @@ const hotelImages = useMemo(() => {
       alert("Kopyalanamadı.");
     }
   };
-function pctChange(prev: number, next: number) {
-  if (!Number.isFinite(prev) || prev <= 0) return null; // % hesaplanamaz
-  const pct = ((next - prev) / prev) * 100;
-  return Math.round(pct * 10) / 10; // 1 ondalık
-}
 
-function fmtTL(n: number) {
-  return Math.round(n).toLocaleString("tr-TR");
-}
+  // ---------------- PRICE HISTORY (KURAL: başlangıç asla değişmez / 0 yazılmaz) ----------------
+  type TimelineItem = {
+    actor: "hotel" | "guest" | "system";
+    kind: "initial" | "update" | "counter" | "current" | "accepted" | "rejected" | "info";
+    price: number | null;
+    note: string;
+    createdAt: any | null;
+  };
 
-function deltaTone(delta: number) {
-  if (delta > 0) return "border-red-500/35 bg-red-500/10 text-red-200";
-  if (delta < 0) return "border-emerald-500/35 bg-emerald-500/10 text-emerald-200";
-  return "border-slate-700 bg-slate-950/60 text-slate-200";
-}
+  const timeline = useMemo<TimelineItem[]>(() => {
+    const rawHist = Array.isArray((offerAny as any)?.priceHistory) ? (offerAny as any).priceHistory : [];
+    const sorted = rawHist
+      .slice()
+      .map((h: any) => ({
+        actor: (h?.actor === "guest" ? "guest" : "hotel") as "hotel" | "guest",
+        kind: (h?.kind || (h?.actor === "guest" ? "counter" : "update")) as any,
+        price: Number(h?.price ?? NaN),
+        note: h?.note ?? "",
+        createdAt: h?.createdAt ?? null
+      }))
+      .sort((a: any, b: any) => toMillis(a?.createdAt) - toMillis(b?.createdAt));
 
+    const out: TimelineItem[] = [];
 
-function fmtMoneyTRY(n: any, currency = "TRY") {
-  const val = Number(n);
-  const safe = Number.isFinite(val) ? val : 0;
-  return `${safe.toLocaleString("tr-TR")} ${currency || "TRY"}`;
-}
+    const nowPrice = Number(offerAny?.totalPrice ?? NaN);
+    const hasNowPrice = Number.isFinite(nowPrice) && nowPrice > 0;
 
+    const guestCounter = Number(offerAny?.guestCounterPrice ?? NaN);
+    const hasGuestCounter = Number.isFinite(guestCounter) && guestCounter > 0;
 
-  // ---------- PRICE HISTORY (NE OLURSA OLSUN ÇALIŞAN) ----------
- type TimelineItem = {
-  actor: "hotel" | "guest" | "system";
-  kind: "initial" | "update" | "counter" | "current" | "accepted" | "rejected" | "info";
-  price: number | null;
-  note: string;
-  createdAt: any | null;
-};
+    const status = String(offerAny?.status || "");
+    const hasAccepted = status === "accepted";
+    const hasRejected = status === "rejected";
 
-const timeline = useMemo<TimelineItem[]>(() => {
-  const currency = offerCurrency;
+    // “update sinyali var mı?”
+    const hasUpdateSignal =
+      !!offerAny?.updatedAt ||
+      status === "countered" ||
+      hasGuestCounter ||
+      hasAccepted ||
+      hasRejected;
 
-  const rawHist = Array.isArray((offerAny as any)?.priceHistory)
-    ? (offerAny as any).priceHistory
-    : [];
-
-  const sorted = rawHist
-    .slice()
-    .map((h: any) => ({
-      actor: h?.actor === "guest" ? "guest" : "hotel",
-      kind: (h?.kind || (h?.actor === "guest" ? "counter" : "update")) as any,
-      price: Number(h?.price ?? NaN),
-      note: h?.note ?? "",
-      createdAt: h?.createdAt ?? null
-    }))
-    .sort((a: any, b: any) => toMillis(a?.createdAt) - toMillis(b?.createdAt));
-
-  const out: TimelineItem[] = [];
-
-  const nowPrice = Number(offerAny?.totalPrice ?? NaN);
-  const hasNowPrice = Number.isFinite(nowPrice) && nowPrice > 0;
-
-  const guestCounter = Number(offerAny?.guestCounterPrice ?? NaN);
-  const hasGuestCounter = Number.isFinite(guestCounter) && guestCounter > 0;
-
-  const hasAccepted = String(offerAny?.status || "") === "accepted";
-  const hasRejected = String(offerAny?.status || "") === "rejected";
-
-  const hasAnyUpdateSignal =
-    !!offerAny?.updatedAt ||
-    hasGuestCounter ||
-    hasAccepted ||
-    hasRejected ||
-    String(offerAny?.status || "") === "countered";
-
-  // ✅ 1) priceHistory VARSA: %100 onu kullan
-  if (sorted.length > 0) {
-    // initial varsa onu başlangıç kabul et
-    const hasInitial = sorted.some((x: any) => x.kind === "initial");
-    if (!hasInitial) {
-      // hotel kayıtları var ama initial yoksa bile, ilk hotel kaydını “initial” gibi göster
-      // (yine de “ilk fiyat” kelimesi yerine “ilk kayıt” diye not düşüyoruz)
-      const first = sorted[0];
-      out.push({
-        actor: first.actor,
-        kind: "initial",
-        price: Number.isFinite(first.price) ? first.price : null,
-        note: "İlk kayıt (history’de initial yok)",
-        createdAt: first.createdAt ?? null
-      });
-      for (let i = 1; i < sorted.length; i++) {
-        const h = sorted[i];
+    // ✅ A) priceHistory VARSA: aynen sırayla göster (initial/update/counter)
+    if (sorted.length > 0) {
+      // initial var mı?
+      const hasInitial = sorted.some((x: any) => x.kind === "initial");
+      if (!hasInitial) {
+        // initial yoksa: ilk kaydı "initial" diye ETİKETLEMEYİZ, "info" ile uyarırız.
         out.push({
-          actor: h.actor as any,
-          kind: h.kind === "counter" ? "counter" : "update",
-          price: Number.isFinite(h.price) ? h.price : null,
-          note: h.note || (h.actor === "guest" ? "Misafir karşı teklif" : "Otel fiyat güncelledi"),
-          createdAt: h.createdAt ?? null
+          actor: "system",
+          kind: "info",
+          price: null,
+          note: "Başlangıç fiyatı (initial) kaydı yok. Otel ilk fiyatı priceHistory’e yazmamış.",
+          createdAt: sorted[0]?.createdAt ?? offerAny?.createdAt ?? null
         });
       }
-    } else {
-      // normal akış
+
       for (const h of sorted) {
         out.push({
-          actor: h.actor as any,
-          kind: h.kind === "initial" ? "initial" : h.kind === "counter" ? "counter" : "update",
-          price: Number.isFinite(h.price) ? h.price : null,
+          actor: h.actor,
+          kind: h.kind === "counter" ? "counter" : h.kind === "initial" ? "initial" : "update",
+          price: Number.isFinite(h.price) && h.price > 0 ? h.price : null,
           note:
             h.note ||
             (h.kind === "initial"
@@ -2634,16 +2618,88 @@ const timeline = useMemo<TimelineItem[]>(() => {
           createdAt: h.createdAt ?? null
         });
       }
+
+      // “güncel fiyat” satırı: sadece history son fiyatından farklıysa
+      const lastHistPrice = (() => {
+        const last = [...out].reverse().find((x) => typeof x.price === "number" && (x.price as number) > 0);
+        return (last?.price as number) || null;
+      })();
+
+      if (hasNowPrice && (!lastHistPrice || lastHistPrice !== nowPrice)) {
+        out.push({
+          actor: "system",
+          kind: "current",
+          price: nowPrice,
+          note: "Güncel fiyat (canlı)",
+          createdAt: offerAny?.updatedAt ?? null
+        });
+      }
+
+      if (hasAccepted) {
+        out.push({
+          actor: "system",
+          kind: "accepted",
+          price: hasNowPrice ? nowPrice : lastHistPrice,
+          note: "Misafir teklifi kabul etti",
+          createdAt: offerAny?.acceptedAt ?? null
+        });
+      }
+      if (hasRejected) {
+        out.push({
+          actor: "system",
+          kind: "rejected",
+          price: hasNowPrice ? nowPrice : lastHistPrice,
+          note: "Misafir teklifi reddetti",
+          createdAt: offerAny?.rejectedAt ?? null
+        });
+      }
+
+      return out;
     }
 
-    // ✅ her durumda “Güncel fiyat” satırı: liveOffer.totalPrice ile (history’den bağımsız)
-    // Ama aynıysa ekleme.
-    const lastHistPrice = (() => {
-      const last = [...out].reverse().find((x) => x.price && x.price > 0);
-      return last?.price ?? null;
-    })();
+    // ✅ B) priceHistory YOKSA:
+    // - update sinyali YOKSA → tek fiyat: bunu “initial” olarak yazarız (çünkü gerçekten tek fiyat senaryosu)
+    if (!hasUpdateSignal) {
+      if (hasNowPrice) {
+        out.push({
+          actor: "hotel",
+          kind: "initial",
+          price: nowPrice,
+          note: "Tek fiyat (priceHistory kaydı yok)",
+          createdAt: offerAny?.createdAt ?? null
+        });
+      } else {
+        out.push({
+          actor: "system",
+          kind: "info",
+          price: null,
+          note: "Fiyat bilgisi bulunamadı.",
+          createdAt: offerAny?.createdAt ?? null
+        });
+      }
+      return out;
+    }
 
-    if (hasNowPrice && (!lastHistPrice || lastHistPrice !== nowPrice)) {
+    // - update sinyali VAR ama history YOK → başlangıç fiyatı bilinmiyor (0 yazmayacağız!)
+    out.push({
+      actor: "system",
+      kind: "info",
+      price: null,
+      note: "Başlangıç fiyatı bilinmiyor. (Otel priceHistory yazmadığı için ilk teklif kaydı yok.)",
+      createdAt: offerAny?.createdAt ?? null
+    });
+
+    if (hasGuestCounter) {
+      out.push({
+        actor: "guest",
+        kind: "counter",
+        price: guestCounter,
+        note: "Misafir karşı teklif",
+        createdAt: offerAny?.guestCounterAt ?? null
+      });
+    }
+
+    if (hasNowPrice) {
       out.push({
         actor: "system",
         kind: "current",
@@ -2657,7 +2713,7 @@ const timeline = useMemo<TimelineItem[]>(() => {
       out.push({
         actor: "system",
         kind: "accepted",
-        price: hasNowPrice ? nowPrice : lastHistPrice,
+        price: hasNowPrice ? nowPrice : null,
         note: "Misafir teklifi kabul etti",
         createdAt: offerAny?.acceptedAt ?? null
       });
@@ -2666,105 +2722,41 @@ const timeline = useMemo<TimelineItem[]>(() => {
       out.push({
         actor: "system",
         kind: "rejected",
-        price: hasNowPrice ? nowPrice : lastHistPrice,
+        price: hasNowPrice ? nowPrice : null,
         note: "Misafir teklifi reddetti",
         createdAt: offerAny?.rejectedAt ?? null
       });
     }
 
     return out;
-  }
+  }, [offerAny, offerCurrency]);
 
-  // ✅ 2) priceHistory YOKSA: “ilk fiyat” asla uydurulmayacak
-  // Eğer update/pazarlık sinyali yoksa (yani tek fiyat senaryosu) -> mevcut fiyat "Tek fiyat" diye yazılır.
-  if (!hasAnyUpdateSignal) {
-    if (hasNowPrice) {
-      out.push({
-        actor: "hotel",
-        kind: "initial",
-        price: nowPrice,
-        note: "Tek fiyat (history kaydı yok)",
-        createdAt: offerAny?.createdAt ?? null
-      });
-    } else {
-      out.push({
-        actor: "system",
-        kind: "info",
-        price: null,
-        note: "Fiyat bilgisi bulunamadı.",
-        createdAt: offerAny?.createdAt ?? null
-      });
-    }
-    return out;
-  }
+  // ✅ HEADER “Başlangıç” fiyatı: SADECE timeline’daki gerçek initial’dan
+  const initialPrice = useMemo(() => {
+    const init = timeline.find((x) => x.kind === "initial" && typeof x.price === "number" && (x.price as number) > 0);
+    return (init?.price as number) || null; // null => bilinmiyor
+  }, [timeline]);
 
-  // Update/pazarlık sinyali var ama history yok -> ilk fiyat BİLİNMİYOR
-  out.push({
-    actor: "system",
-    kind: "info",
-    price: null,
-    note: "İlk fiyat kaydı yok. (Otel priceHistory yazmadığı için başlangıç fiyatı bilinmiyor.)",
-    createdAt: offerAny?.createdAt ?? null
-  });
-
-  if (hasGuestCounter) {
-    out.push({
-      actor: "guest",
-      kind: "counter",
-      price: guestCounter,
-      note: "Misafir karşı teklif",
-      createdAt: offerAny?.guestCounterAt ?? null
-    });
-  }
-
-  if (hasNowPrice) {
-    out.push({
-      actor: "system",
-      kind: "current",
-      price: nowPrice,
-      note: "Güncel fiyat (canlı)",
-      createdAt: offerAny?.updatedAt ?? null
-    });
-  }
-
-  if (hasAccepted) {
-    out.push({
-      actor: "system",
-      kind: "accepted",
-      price: hasNowPrice ? nowPrice : null,
-      note: "Misafir teklifi kabul etti",
-      createdAt: offerAny?.acceptedAt ?? null
-    });
-  }
-  if (hasRejected) {
-    out.push({
-      actor: "system",
-      kind: "rejected",
-      price: hasNowPrice ? nowPrice : null,
-      note: "Misafir teklifi reddetti",
-      createdAt: offerAny?.rejectedAt ?? null
-    });
-  }
-
-  return out;
-}, [offerAny, offerCurrency]);
-
-
-  const firstHotelPrice = useMemo(() => {
-    const h = timeline.find((x: any) => x.actor === "hotel");
-    return Number(h?.price ?? offerAny?.totalPrice ?? 0) || 0;
-  }, [timeline, offerAny?.totalPrice]);
-
-  const lastPrice = Number(offerAny?.totalPrice ?? 0) || firstHotelPrice;
+  // ✅ SON fiyat: her zaman canlı totalPrice
+  const lastPrice = useMemo(() => {
+    const nowPrice = Number(offerAny?.totalPrice ?? NaN);
+    return Number.isFinite(nowPrice) && nowPrice > 0 ? nowPrice : 0;
+  }, [offerAny?.totalPrice]);
 
   const minHotelPrice = useMemo(() => {
-    const hs = timeline.filter((x: any) => x.actor === "hotel").map((x: any) => Number(x.price || 0)).filter((n: number) => n > 0);
+    const hs = timeline
+      .filter((x) => x.actor === "hotel")
+      .map((x) => Number(x.price || 0))
+      .filter((n) => n > 0);
     return hs.length ? Math.min(...hs) : null;
   }, [timeline]);
 
-  const bargained = timeline.some((x: any) => x.actor === "guest") || timeline.filter((x: any) => x.actor === "hotel").length >= 2;
+  const bargained = useMemo(() => {
+    const hotelSteps = timeline.filter((x) => x.actor === "hotel" && (x.kind === "update" || x.kind === "initial"));
+    const hasGuest = timeline.some((x) => x.actor === "guest");
+    return hasGuest || hotelSteps.length >= 2;
+  }, [timeline]);
 
-  // ---------- UI CHIP ----------
   const Chip = ({ children, tone = "slate" }: { children: any; tone?: "slate" | "emerald" | "amber" | "red" | "sky" }) => {
     const cls =
       tone === "emerald"
@@ -2778,12 +2770,15 @@ const timeline = useMemo<TimelineItem[]>(() => {
         : "border-slate-700 bg-slate-950/60 text-slate-200";
     return <span className={`inline-flex items-center rounded-md border px-2 py-1 text-[0.72rem] ${cls}`}>{children}</span>;
   };
+// =====================
+// OfferDetailModal (PART 2/3) — UI (header + request + rooms + timeline) — KAYMA YOK / mobil uyumlu
+// =====================
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60">
         <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
 
-        <div className="relative mt-10 w-full max-w-6xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-xl shadow-slate-950/60 max-h-[88vh] overflow-y-auto text-[0.85rem] space-y-4">
+        <div className="relative mt-6 md:mt-10 w-[96vw] max-w-6xl rounded-2xl border border-slate-800 bg-slate-950/95 p-4 md:p-5 shadow-xl shadow-slate-950/60 max-h-[90vh] overflow-y-auto text-[0.85rem] space-y-4">
           {/* Header */}
           <div className="flex items-start justify-between gap-3">
             <div className="space-y-1">
@@ -2799,14 +2794,20 @@ const timeline = useMemo<TimelineItem[]>(() => {
                 <Chip tone="sky">
                   Son fiyat (canlı): <b className="ml-1">{money(lastPrice, offerCurrency)}</b>
                 </Chip>
+
                 <Chip>
-                  Başlangıç: <b className="ml-1">{money(firstHotelPrice, offerCurrency)}</b>
+                  Başlangıç:{" "}
+                  <b className="ml-1">
+                    {initialPrice ? money(initialPrice, offerCurrency) : "Bilinmiyor (history yok)"}
+                  </b>
                 </Chip>
+
                 {minHotelPrice != null ? (
                   <Chip tone="emerald">
                     En düşük: <b className="ml-1">{money(minHotelPrice, offerCurrency)}</b>
                   </Chip>
                 ) : null}
+
                 <Chip tone={bargained ? "amber" : "slate"}>{bargained ? "Pazarlık / güncelleme var" : "Tek fiyat"}</Chip>
                 {matchSummary.ok === true && <Chip tone="emerald">Oda uyumlu</Chip>}
                 {matchSummary.ok === false && <Chip tone="red">Oda tercihi farklı olabilir</Chip>}
@@ -2829,10 +2830,11 @@ const timeline = useMemo<TimelineItem[]>(() => {
                 <>
                   <button
                     type="button"
-                    className="flex-1 overflow-hidden min-h-[280px] relative group"
+                    className="flex-1 overflow-hidden min-h-[240px] md:min-h-[280px] relative group"
                     onClick={() => openImage(hotelImages[activeHotelImage])}
                     title="Büyütmek için tıkla"
                   >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={hotelImages[activeHotelImage]} alt="otel" className="w-full h-full object-cover" />
                     <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition" />
                     <div className="absolute bottom-3 right-3 rounded-md border border-white/25 bg-black/40 px-2 py-1 text-[0.72rem] text-white">
@@ -2850,6 +2852,7 @@ const timeline = useMemo<TimelineItem[]>(() => {
                           className={`w-16 h-16 rounded-lg border overflow-hidden ${activeHotelImage === idx ? "border-emerald-400" : "border-slate-700"}`}
                           title="Seç"
                         >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img src={img} alt={`thumb-${idx}`} className="w-full h-full object-cover" />
                         </button>
                       ))}
@@ -2857,7 +2860,7 @@ const timeline = useMemo<TimelineItem[]>(() => {
                   )}
                 </>
               ) : (
-                <div className="flex flex-col items-center justify-center text-slate-500 text-xs flex-1 min-h-[280px]">
+                <div className="flex flex-col items-center justify-center text-slate-500 text-xs flex-1 min-h-[240px] md:min-h-[280px]">
                   <span className="text-3xl mb-1">🏨</span>
                   <span>Bu otel henüz görsel eklememiş.</span>
                 </div>
@@ -2868,9 +2871,7 @@ const timeline = useMemo<TimelineItem[]>(() => {
               <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <h2 className="text-base font-semibold text-slate-100">
-                      {liveHotel?.displayName || offerAny.hotelName || "Otel"}
-                    </h2>
+                    <h2 className="text-base font-semibold text-slate-100">{liveHotel?.displayName || offerAny.hotelName || "Otel"}</h2>
                     {hp?.starRating ? (
                       <p className="text-[0.8rem] text-amber-300 mt-1">{hp.starRating}★</p>
                     ) : (
@@ -2915,7 +2916,7 @@ const timeline = useMemo<TimelineItem[]>(() => {
                   </div>
                 </div>
 
-                {Array.isArray(hp?.features) && hp!.features!.length > 0 && (
+                {Array.isArray(hp?.features) && (hp?.features?.length ?? 0) > 0 && (
                   <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                     <p className="text-[0.75rem] text-slate-400 mb-2">Özellikler</p>
                     <div className="flex flex-wrap gap-2">
@@ -2966,15 +2967,11 @@ const timeline = useMemo<TimelineItem[]>(() => {
               </div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                 <p className="text-[0.72rem] text-slate-400">Tarih</p>
-                <p className="text-slate-100 font-semibold mt-1">
-                  {safeStr(checkIn)} → {safeStr(checkOut)} ({nights} gece)
-                </p>
+                <p className="text-slate-100 font-semibold mt-1">{safeStr(checkIn)} → {safeStr(checkOut)} ({nights} gece)</p>
               </div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                 <p className="text-[0.72rem] text-slate-400">Kişi / Oda</p>
-                <p className="text-slate-100 font-semibold mt-1">
-                  {adults} yetişkin • {children} çocuk • {roomsCount} oda
-                </p>
+                <p className="text-slate-100 font-semibold mt-1">{adults} yetişkin • {children} çocuk • {roomsCount} oda</p>
                 {childrenAges.length ? <p className="text-[0.75rem] text-slate-300 mt-1">Yaş: {childrenAges.join(", ")}</p> : null}
               </div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
@@ -3008,7 +3005,7 @@ const timeline = useMemo<TimelineItem[]>(() => {
             </details>
           </div>
 
-          {/* Oda eşleşmesi */}
+          {/* Oda eşleşmesi (adet) */}
           <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4 space-y-2">
             <p className="text-sm font-semibold text-slate-100">Oda Eşleşmesi (adet)</p>
 
@@ -3070,15 +3067,14 @@ const timeline = useMemo<TimelineItem[]>(() => {
                   const total = Number(rb.totalPrice ?? nightly * n);
                   const label = rb.roomTypeName || rb.roomTypeId || `Oda ${idx + 1}`;
 
-                  const hasProfile =
-                    !!hp?.roomTypes?.find((rt: any) => rt.id === rb.roomTypeId || rt.name === rb.roomTypeName);
+                  const hasProfile = !!(hp as any)?.roomTypes?.find?.((rt: any) => rt.id === rb.roomTypeId || rt.name === rb.roomTypeName);
 
                   return (
                     <button
                       key={idx}
                       type="button"
                       onClick={() => openRoomProfile(rb)}
-                      className={`rounded-2xl border border-slate-800 bg-slate-950/60 p-4 text-left hover:bg-white/[0.04] hover:border-emerald-500/30 transition`}
+                      className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4 text-left hover:bg-white/[0.04] hover:border-emerald-500/30 transition"
                       title="Oda detayını gör"
                     >
                       <div className="flex items-start justify-between gap-3">
@@ -3096,9 +3092,7 @@ const timeline = useMemo<TimelineItem[]>(() => {
                             {n} gece × {nightly.toLocaleString("tr-TR")} {offerCurrency}
                           </div>
 
-                          <div className="text-[0.72rem] text-slate-500 mt-2">
-                            👆 Tıkla: oda detayını gör
-                          </div>
+                          <div className="text-[0.72rem] text-slate-500 mt-2">👆 Tıkla: oda detayını gör</div>
                         </div>
 
                         <div className="text-right">
@@ -3117,7 +3111,7 @@ const timeline = useMemo<TimelineItem[]>(() => {
             )}
           </div>
 
-          {/* ✅ Fiyat geçmişi / pazarlık — NE OLURSA OLSUN */}
+          {/* ✅ Fiyat geçmişi / pazarlık (canlı) — BAŞLANGIÇ asla değişmez, 0 yok */}
           <div className="rounded-2xl border border-slate-800 bg-slate-950/90 p-4 space-y-2">
             <div className="flex items-center justify-between gap-2">
               <p className="text-slate-100 font-semibold text-[0.9rem]">Fiyat Geçmişi / Pazarlık (canlı)</p>
@@ -3127,75 +3121,96 @@ const timeline = useMemo<TimelineItem[]>(() => {
             </div>
 
             <div className="grid md:grid-cols-2 gap-2">
-            {timeline.map((h: any, i: number) => {
-  const price = Number(h?.price ?? 0) || 0;
+              {timeline.map((h, i) => {
+                const curPrice = typeof h.price === "number" ? h.price : null;
 
-  // bir önceki "fiyatlı" adımı bul (system satırları vs olabilir)
-  
+                // önceki fiyatlı adımı bul
+                let prevPrice: number | null = null;
+                for (let j = i - 1; j >= 0; j--) {
+                  const p = timeline[j]?.price;
+                  if (typeof p === "number" && p > 0) {
+                    prevPrice = p;
+                    break;
+                  }
+                }
 
-const prevPrice = i > 0 ? timeline[i - 1]?.price : null;
-const curPrice = h.price;
+                const canDelta = typeof prevPrice === "number" && typeof curPrice === "number" && prevPrice > 0 && curPrice > 0;
+                const delta = canDelta ? (curPrice! - prevPrice!) : null;
+                const pct = canDelta ? pctChange(prevPrice!, curPrice!) : null;
 
-const canDelta =
-  typeof prevPrice === "number" &&
-  typeof curPrice === "number" &&
-  prevPrice > 0 &&
-  curPrice > 0;
+                const deltaLabel =
+                  delta == null || delta === 0
+                    ? ""
+                    : `${delta > 0 ? "+" : ""}${fmtTL(delta)} ${offerCurrency}`;
 
+                const pctLabel =
+                  pct == null || pct === 0
+                    ? ""
+                    : `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%`;
 
+                const who =
+                  h.actor === "hotel" ? "Otel" : h.actor === "guest" ? "Sen" : "Sistem";
 
-const delta = canDelta ? curPrice - prevPrice : null;
-const pct = canDelta ? ((curPrice - prevPrice) / prevPrice) * 100 : null;
+                const kindLabel =
+                  h.kind === "initial" ? "İlk fiyat" :
+                  h.kind === "update" ? "Fiyat güncellendi" :
+                  h.kind === "counter" ? "Karşı teklif" :
+                  h.kind === "current" ? "Güncel fiyat" :
+                  h.kind === "accepted" ? "Kabul" :
+                  h.kind === "rejected" ? "Ret" :
+                  "Bilgi";
 
-const deltaLabel =
-  delta == null || delta === 0
-    ? ""
-    : `${delta > 0 ? "+" : ""}${Math.round(delta).toLocaleString("tr-TR")} ${offerCurrency}`;
+                return (
+                  <div key={i} className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-slate-100 font-semibold">
+                          <span className="mr-2">{who}</span>
+                          <span className="text-slate-300">{kindLabel}</span>
+                        </div>
+                        {toTR(h.createdAt) ? <div className="text-[0.7rem] text-slate-500 mt-2">{toTR(h.createdAt)}</div> : null}
+                        {h.note ? <div className="text-[0.8rem] text-slate-200 mt-2">Not: <span className="text-slate-300">{h.note}</span></div> : null}
+                      </div>
 
-const pctLabel =
-  pct == null || pct === 0
-    ? ""
-    : `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%`;
+                      <div className="shrink-0 text-right space-y-2">
+                        <div className="inline-flex items-center gap-2 flex-wrap justify-end">
+                          {/* fiyat */}
+                          {typeof curPrice === "number" && curPrice > 0 ? (
+                            <span className="inline-flex items-center rounded-md border border-sky-500/35 bg-sky-500/10 px-2 py-1 text-[0.72rem] text-sky-200">
+                              {money(curPrice, offerCurrency)}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center rounded-md border border-slate-700 bg-slate-950/60 px-2 py-1 text-[0.72rem] text-slate-300">
+                              Fiyat yok
+                            </span>
+                          )}
 
-        
+                          {/* TL fark */}
+                          {deltaLabel ? (
+                            <span className={`inline-flex items-center rounded-md border px-2 py-1 text-[0.72rem] ${deltaTone(delta as number)}`}>
+                              {deltaLabel}
+                            </span>
+                          ) : null}
 
-  return (
-    <div key={i} className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-slate-100 font-semibold">
-          <span className="mr-2">{h.actor === "hotel" ? "Otel" : h.actor === "guest" ? "Sen" : "Sistem"}</span>
-          <span className="text-slate-300">
-            {h.kind === "initial" ? "İlk fiyat" : h.kind === "update" ? "Fiyat güncellendi" : h.kind === "counter" ? "Karşı teklif" : String(h.kind)}
-          </span>
-        </div>
-
-        {/* Sağ üst: fiyat + rozetler */}
-        <div className="flex items-center gap-2">
-          {/* mevcut fiyat */}
-          <span className="inline-flex items-center rounded-md border border-sky-500/35 bg-sky-500/10 px-2 py-1 text-[0.72rem] text-sky-200">
-            {money(price, offerCurrency)}
-          </span>
-
-
-      
-        </div>
-      </div>
-
-      {/* zaman + not */}
-      {toTR(h.createdAt) ? <div className="text-[0.7rem] text-slate-500 mt-2">{toTR(h.createdAt)}</div> : null}
-      {h.note ? <div className="text-[0.8rem] text-slate-200 mt-2">Not: <span className="text-slate-300">{String(h.note)}</span></div> : null}
-    </div>
-  );
-})}
-
+                          {/* % */}
+                          {pctLabel ? (
+                            <span className={`inline-flex items-center rounded-md border px-2 py-1 text-[0.72rem] ${deltaTone(delta as number)}`}>
+                              %{pctLabel.replace("%", "")}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
 
-            {/* ekstra güven: timeline 1 satırdan küçük olamaz ama yine de */}
-            {timeline.length === 0 && (
+            {timeline.length === 0 ? (
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-slate-300">
-                Timeline üretilemedi. (Beklenmeyen durum) — yine de son fiyat: {money(lastPrice, offerCurrency)}
+                Timeline üretilemedi. Yine de son fiyat: {money(lastPrice, offerCurrency)}
               </div>
-            )}
+            ) : null}
           </div>
         </div>
       </div>
@@ -3212,6 +3227,7 @@ const pctLabel =
             >
               Kapat ✕
             </button>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={imgSrc} alt="Büyük görsel" className="w-full max-h-[78vh] object-contain rounded-xl border border-white/10" />
           </div>
         </div>
@@ -3230,6 +3246,18 @@ const pctLabel =
     </>
   );
 }
+// =====================
+// OfferDetailModal (PART 3/3) — NOT: Bu parça ekstra bir şey eklemez.
+// Sadece dosyada derleme hatası olmasın diye kapanış zaten PART 2'de yapıldı.
+// Eğer sende eski modalda ayrıca "images/gallery" TS hatası alan yer kaldıysa,
+// o satırı SİL ve PART 1’deki hotelImages useMemo’yu tek kaynak olarak kullan.
+// =====================
+
+// ✅ ÖNEMLİ:
+// 1) hotelImages için başka bir "const hotelImages = ..." daha varsa KALDIR.
+// 2) timeline içinde "const delta/const pct/const deltaLabel" aynı blokta 2 kez yazılıysa KALDIR.
+//    (Bu modalda zaten tek kez var.)
+
 
 
 

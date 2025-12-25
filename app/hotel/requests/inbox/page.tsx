@@ -696,7 +696,17 @@ export default function HotelRequestsInboxPage() {
           cancellationPolicyType: offerCancelType,
           cancellationPolicyDays: offerCancelDays,
           status: "sent",
-          createdAt: serverTimestamp()
+          createdAt: serverTimestamp(),
+          priceHistory: [
+  {
+    actor: "hotel",
+    kind: "initial",
+    price: Number(totalPrice ?? 0),
+    note: "İlk teklif",
+    createdAt: serverTimestamp()
+  }
+],
+
         });
 
         // 🔔 bildirimler – ilk teklif
