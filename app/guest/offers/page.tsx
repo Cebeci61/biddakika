@@ -6,21 +6,64 @@ import React, { useEffect, useMemo, useState, FormEvent } from "react";
 import { Protected } from "@/components/Protected";
 import { useAuth } from "@/context/AuthContext";
 import { getFirestoreDb } from "@/lib/firebase/client";
+import { logActivity } from "@/app/admin/_components/activityLog";
 
 
 import {
-  collection,
   getDocs,
   query,
   where,
   Timestamp,
   doc,
   updateDoc,
-  serverTimestamp,
   getDoc,
-  addDoc,
   arrayUnion
 } from "firebase/firestore";
+// (path sende farklıysa: "./activityLog" kullan)
+
+import { addDoc, collection, getFirestore, serverTimestamp } from "firebase/firestore";
+import { getAuth } from "firebase/auth";
+
+async function createBooking(bookingData: any) {
+  const db = getFirestore();
+
+  // 1) booking kaydı
+  const bookingRef = await addDoc(collection(db, "bookings"), {
+    ...bookingData,
+    createdAt: serverTimestamp(),
+  });
+  
+await logActivity({
+  type: "booking_created",
+  actorRole: "guest",
+  actorId: bookingData.guestId || "unknown",
+  actorName: bookingData.guestName || "Misafir",
+  city: bookingData.city || "",
+  district: bookingData.district || "",
+  ref: { collection: "bookings", id: bookingRef.id },
+  message: `Rezervasyon oluşturuldu • ${bookingData.guestName || "Misafir"} → ${bookingData.hotelName || "Otel"} • ${bookingData.totalPrice || 0} ${bookingData.currency || "TRY"}`,
+  meta: {
+    bookingId: bookingRef.id,
+    requestId: bookingData.requestId || "",
+    offerId: bookingData.offerId || "",
+    hotelId: bookingData.hotelId || "",
+    hotelName: bookingData.hotelName || "",
+    paymentMethod: bookingData.paymentMethod || "",
+    paymentStatus: bookingData.paymentStatus || "",
+    checkIn: bookingData.checkIn || "",
+    checkOut: bookingData.checkOut || "",
+  },
+});
+
+  // 2) ✅ log
+  const auth = getAuth();
+  const actorId = auth.currentUser?.uid ?? "unknown";
+
+ 
+
+  return bookingRef.id;
+}
+
 
 /* ------------------------------------------------
   PRICE HISTORY (HOTEL OFFERS)
@@ -726,7 +769,9 @@ async function createBooking(finalPaymentMethod: PaymentMethod) {
     const paymentStatus =
       finalPaymentMethod === "card3d" ? "paid" : finalPaymentMethod === "payAtHotel" ? "payAtHotel" : "pending";
 
-    const bookingRef = await addDoc(collection(db, "bookings"), {
+    const bookingRef = await addDoc(collection(db, "bookings"),
+     {
+      
       type: "hotel",
 
       offerId: offer.id,
