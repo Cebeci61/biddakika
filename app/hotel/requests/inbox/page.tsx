@@ -528,6 +528,33 @@ export default function HotelRequestsInboxPage() {
   ): RoomQuoteState[] {
     const roomsCount = req.roomsCount ?? 1;
     const nights = calculateNights(req);
+    // ✅ requestFeatures kesin string[]
+const requestFeatures: string[] =
+  Array.isArray((req as any).featureKeys) && (req as any).featureKeys.length
+    ? ((req as any).featureKeys as string[])
+    : Array.isArray((req as any).hotelFeaturePrefs) && (req as any).hotelFeaturePrefs.length
+    ? ((req as any).hotelFeaturePrefs as string[])
+    : [];
+
+// ✅ notesAll kesin string (boşsa "")
+const notesAll: string = [
+  (req as any).note,
+  (req as any).notes,
+  (req as any).generalNote,
+  (req as any).contactNote,
+  (req as any).locationNote,
+  (req as any).boardTypeNote,
+  (req as any).hotelFeatureNote,
+  (req as any).extraFeaturesText,
+  (req as any).flightNotes,
+  (req as any).transferNotes,
+  (req as any).activities,
+  (req as any).requestNote
+]
+  .filter((x) => x !== undefined && x !== null && String(x).trim() !== "")
+  .map((x) => String(x).trim())
+  .join("\n\n");
+
 
     if (
       existing &&
@@ -975,6 +1002,49 @@ export default function HotelRequestsInboxPage() {
               : existingOffer?.totalPrice ?? 0;
 
           const isGroup = req.isGroup || req.type === "group";
+          const FEATURE_LABEL: Record<string, string> = {
+  pool: "Havuz",
+  spa: "Spa / Wellness",
+  parking: "Otopark",
+  wifi: "Ücretsiz Wi-Fi",
+  seaView: "Deniz manzarası",
+  mountainView: "Dağ manzarası",
+  cityCenter: "Şehir merkezine yakın",
+  beachFront: "Denize sıfır",
+  forest: "Doğa / orman içinde",
+  riverside: "Dere / nehir kenarı",
+  stadiumNear: "Stadyuma yakın",
+  hospitalNear: "Hastaneye yakın",
+  shoppingMallNear: "AVM yakın",
+  family: "Aile odaları",
+  petFriendly: "Evcil hayvan kabul edilir"
+};
+
+const requestFeatures: string[] =
+  Array.isArray((req as any).featureKeys) && (req as any).featureKeys.length
+    ? ((req as any).featureKeys as string[]).map((k) => FEATURE_LABEL[k] || k)
+    : Array.isArray((req as any).hotelFeaturePrefs) && (req as any).hotelFeaturePrefs.length
+    ? ((req as any).hotelFeaturePrefs as string[]).map((k) => FEATURE_LABEL[k] || k)
+    : [];
+
+// ✅ Misafirin tüm notlarını tek yerde topla (otel talebi + grup talebi + farklı isimler)
+const notesAll = [
+  (req as any).note,
+  (req as any).notes,
+  (req as any).generalNote,
+  (req as any).contactNote,
+  (req as any).locationNote,
+  (req as any).boardTypeNote,
+  (req as any).hotelFeatureNote,
+  (req as any).extraFeaturesText,
+  (req as any).flightNotes,
+  (req as any).transferNotes,
+  (req as any).activities,
+  (req as any).requestNote
+]
+  .filter((x) => x !== undefined && x !== null && String(x).trim() !== "")
+  .map((x) => String(x).trim())
+  .join("\n\n");
 
           return (
             <section
@@ -1428,28 +1498,156 @@ export default function HotelRequestsInboxPage() {
   );
 }
 /* ----------------------- TALEP DETAY MODAL (GÜNCEL) ----------------------- */
-function RequestDetailModal({
+
+import {onSnapshot } from "firebase/firestore";
+
+/** ---------------------------
+ *  RequestDetailModal (HOTEL)
+ *  - Talep: requests/{id} live
+ *  - Teklif: offers/{id} live (varsa)
+ *  - Otel profil/oda: users/{hotelId} live (varsa)
+ *  - KVKK: accepted olana kadar maskeli
+ *  - Timeline: TL/% fark rozetli
+ * --------------------------- */
+export function RequestDetailModal({
   req,
   offer,
   onClose
 }: {
-  req: RequestItem;
-  offer?: ExistingOffer;
+  req: any; // RequestItem
+  offer?: any; // ExistingOffer
   onClose: () => void;
 }) {
-  const nights = calculateNights(req);
-  const totalGuests = req.adults + (req.childrenCount ?? 0);
-  const roomsCount = req.roomsCount ?? 1;
-  const isGroup = req.isGroup || req.type === "group";
+  const db = getFirestoreDb();
 
-  const cancelText = offer
-    ? cancellationPolicyLabelForOffer(
-        offer.cancellationPolicyType,
-        offer.cancellationPolicyDays ?? undefined
-      )
-    : null;
+  // ✅ canlı talep + canlı teklif + canlı otel profili
+  const [liveReq, setLiveReq] = useState<any>(req);
+  const [liveOffer, setLiveOffer] = useState<any | null>(offer ?? null);
+  const [liveHotel, setLiveHotel] = useState<any | null>(null);
 
-  // ---- label map’leri (misafir request/new sayfasındaki key’lerle uyumlu) ----
+  const [reqLoading, setReqLoading] = useState(true);
+  const [offerLoading, setOfferLoading] = useState(false);
+  const [hotelLoading, setHotelLoading] = useState(false);
+
+  // oda modal
+  const [roomModalOpen, setRoomModalOpen] = useState(false);
+  const [activeRoomProfile, setActiveRoomProfile] = useState<any | null>(null);
+
+  /* ---------------- Helpers ---------------- */
+
+  function safeStr(v: any, fb = "—") {
+    if (v === null || v === undefined) return fb;
+    const s = String(v).trim();
+    return s.length ? s : fb;
+  }
+
+  function safeNum(v: any, d = 0) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : d;
+  }
+
+  function money(n: any, currency: string) {
+    const val = safeNum(n, 0);
+    return `${val.toLocaleString("tr-TR")} ${currency || "TRY"}`;
+  }
+
+  function toMillis(ts: any) {
+    try {
+      if (!ts) return 0;
+      if (typeof ts?.toMillis === "function") return ts.toMillis();
+      if (typeof ts?.toDate === "function") return ts.toDate().getTime();
+      const d = new Date(ts);
+      return Number.isNaN(d.getTime()) ? 0 : d.getTime();
+    } catch {
+      return 0;
+    }
+  }
+
+  function toTR(ts: any) {
+    try {
+      if (!ts) return "";
+      if (typeof ts?.toDate === "function") return ts.toDate().toLocaleString("tr-TR");
+      const d = new Date(ts);
+      return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("tr-TR");
+    } catch {
+      return "";
+    }
+  }
+
+  function pctChange(prev: number, next: number) {
+    if (!Number.isFinite(prev) || prev <= 0) return null;
+    const pct = ((next - prev) / prev) * 100;
+    return Math.round(pct * 10) / 10; // 1 ondalık
+  }
+
+  function deltaTone(delta: number) {
+    if (delta > 0) return "border-red-500/35 bg-red-500/10 text-red-200";
+    if (delta < 0) return "border-emerald-500/35 bg-emerald-500/10 text-emerald-200";
+    return "border-slate-700 bg-slate-950/60 text-slate-200";
+  }
+
+  // dot-path pick
+  function pick(obj: any, keys: string[], fallback: any = null) {
+    for (const k of keys) {
+      const parts = k.split(".").filter(Boolean);
+      let cur = obj;
+      for (const p of parts) cur = cur?.[p];
+      if (cur !== undefined && cur !== null && String(cur).trim() !== "") return cur;
+    }
+    return fallback;
+  }
+
+  // KVKK maskeleme
+  function maskName(name?: string | null): string {
+    if (!name) return "Misafir";
+    const parts = String(name).split(" ").filter(Boolean);
+    return parts.map((p) => p[0] + "*".repeat(Math.max(2, p.length - 1))).join(" ");
+  }
+  function maskCompany(name?: string | null): string {
+    if (!name) return "—";
+    const s = String(name).trim();
+    if (!s) return "—";
+    return s[0] + "*".repeat(Math.max(4, s.length - 1));
+  }
+  function maskEmail(email?: string | null): string {
+    if (!email) return "—";
+    const [user, domain] = String(email).split("@");
+    if (!domain) return "—";
+    const [dn, ext] = domain.split(".");
+    const mu = (user?.[0] || "*") + "*".repeat(Math.max(3, (user || "").length - 1));
+    const md = (dn?.[0] || "*") + "*".repeat(Math.max(3, (dn || "").length - 1));
+    return `${mu}@${md}${ext ? "." + ext : ""}`;
+  }
+  function maskPhone(phone?: string | null): string {
+    if (!phone) return "—";
+    const s = String(phone);
+    const digits = s.replace(/\D/g, "");
+    if (digits.length < 4) return "—";
+    const last2 = digits.slice(-2);
+    const prefix = s.slice(0, 4); // +90 gibi
+    return `${prefix} ***** ${last2}`;
+  }
+
+  function safeJSON(v: any) {
+    try {
+      return JSON.stringify(v, null, 2);
+    } catch {
+      return String(v);
+    }
+  }
+
+  function renderValue(v: any) {
+    if (v === null || v === undefined) return "—";
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return String(v);
+    if (Array.isArray(v)) {
+      if (!v.length) return "—";
+      if (v.every((x) => ["string", "number", "boolean"].includes(typeof x))) return v.join(" • ");
+      return v.map((x, i) => `${i + 1}) ${typeof x === "object" ? safeJSON(x) : String(x)}`).join("\n");
+    }
+    return safeJSON(v);
+  }
+
+  // label map’leri
   const BOARD_LABEL: Record<string, string> = {
     RO: "Sadece oda (RO)",
     BB: "Oda + Kahvaltı (BB)",
@@ -1489,62 +1687,404 @@ function RequestDetailModal({
     petFriendly: "Evcil hayvan kabul edilir"
   };
 
-  const starsText =
-    req.desiredStarRatings && req.desiredStarRatings.length > 0
-      ? req.desiredStarRatings.map((s) => `${s}★`).join(", ")
-      : null;
+  // roomTypeLabel (senin sistemindeki key’lere göre)
+  function roomTypeLabel(type?: string) {
+    switch (type) {
+      case "standard":
+        return "Standart oda";
+      case "family":
+        return "Aile odası";
+      case "suite":
+        return "Suit oda";
+      case "deluxe":
+        return "Deluxe oda";
+      default:
+        return type ? String(type) : "Fark etmez";
+    }
+  }
 
-  // Misafir request/new ile group-request alan adları karışık olabiliyor:
-  // - hotel talebinde: featureKeys + extraFeaturesText + locationNote + boardType + accommodationType
-  // - grup talebinde: hotelFeaturePrefs + hotelFeatureNote + boardTypes + boardTypeNote
+  function cancellationPolicyLabelForOffer(type?: any, days?: number) {
+    const t = type ?? "non_refundable";
+    const d = days ?? 3;
+    if (t === "non_refundable") return "İptal edilemez / iade yok.";
+    if (t === "flexible") return "Giriş tarihine kadar ücretsiz iptal.";
+    if (t === "until_days_before") return `Giriş tarihinden ${d} gün öncesine kadar ücretsiz iptal.`;
+    return "Belirtilmemiş";
+  }
+
+  // ---------------- Firestore LIVE ----------------
+
+  // 1) request live (tam doc)
+  useEffect(() => {
+    const reqId = req?.id || req?.requestId || null;
+    if (!reqId) {
+      setReqLoading(false);
+      return;
+    }
+
+    setReqLoading(true);
+    const unsub = onSnapshot(
+      doc(db, "requests", reqId),
+      (snap) => {
+        if (snap.exists()) setLiveReq({ id: snap.id, ...(snap.data() as any) });
+        else setLiveReq(req);
+        setReqLoading(false);
+      },
+      () => setReqLoading(false)
+    );
+
+    return () => {
+      try {
+        unsub();
+      } catch {}
+    };
+  }, [db, req?.id, req?.requestId]);
+
+  // 2) offer live (varsa)
+  useEffect(() => {
+    const offerId = offer?.id || offer?.offerId || null;
+    if (!offerId) return;
+
+    setOfferLoading(true);
+    const unsub = onSnapshot(
+      doc(db, "offers", offerId),
+      (snap) => {
+        if (snap.exists()) setLiveOffer({ id: snap.id, ...(snap.data() as any) });
+        setOfferLoading(false);
+      },
+      () => setOfferLoading(false)
+    );
+
+    return () => {
+      try {
+        unsub();
+      } catch {}
+    };
+  }, [db, offer?.id, offer?.offerId]);
+
+  // 3) hotel profile live (roomTypes için)
+  useEffect(() => {
+    const hid = (offer as any)?.hotelId || (liveOffer as any)?.hotelId || null;
+    if (!hid) {
+      setHotelLoading(false);
+      return;
+    }
+
+    setHotelLoading(true);
+    const unsub = onSnapshot(
+      doc(db, "users", hid),
+      (snap) => {
+        if (snap.exists()) setLiveHotel({ id: snap.id, ...(snap.data() as any) });
+        else setLiveHotel(null);
+        setHotelLoading(false);
+      },
+      () => setHotelLoading(false)
+    );
+
+    return () => {
+      try {
+        unsub();
+      } catch {}
+    };
+  }, [db, (offer as any)?.hotelId, (liveOffer as any)?.hotelId]);
+
+  const reqAny: any = liveReq || {};
+  const offerAny: any = liveOffer || offer || null;
+
+  // KVKK unlock kuralı: accepted olunca aç
+  const isUnlocked = offerAny ? String(offerAny.status || "") === "accepted" : false;
+
+  // ---------------- Request normalize ----------------
+  const nights = useMemo(() => {
+    try {
+      const ci = pick(reqAny, ["checkIn"], null);
+      const co = pick(reqAny, ["checkOut"], null);
+      if (!ci || !co) return 1;
+      const d1 = new Date(ci);
+      const d2 = new Date(co);
+      const diff = Math.floor((d2.setHours(0, 0, 0, 0) - d1.setHours(0, 0, 0, 0)) / 86400000);
+      return diff > 0 ? diff : 1;
+    } catch {
+      return 1;
+    }
+  }, [reqAny]);
+
+  const adults = safeNum(pick(reqAny, ["adults"], 0), 0);
+  const childrenCount = safeNum(pick(reqAny, ["childrenCount"], 0), 0);
+  const totalGuests = adults + childrenCount;
+  const roomsCount = safeNum(pick(reqAny, ["roomsCount"], 1), 1);
+  const childrenAges: number[] = Array.isArray(reqAny?.childrenAges) ? reqAny.childrenAges : [];
+
+  const isGroup = !!(reqAny.isGroup || reqAny.type === "group");
+
+  const starsText =
+    Array.isArray(reqAny?.desiredStarRatings) && reqAny.desiredStarRatings.length
+      ? reqAny.desiredStarRatings.map((s: any) => `${s}★`).join(", ")
+      : (reqAny.starRating ? `${reqAny.starRating}★` : null);
+
   const requestBoardText =
-    (req as any).boardType
-      ? BOARD_LABEL[String((req as any).boardType)] || String((req as any).boardType)
-      : req.boardTypes && req.boardTypes.length > 0
-      ? req.boardTypes.map((b) => BOARD_LABEL[b] || b).join(", ")
+    (reqAny as any).boardType
+      ? BOARD_LABEL[String((reqAny as any).boardType)] || String((reqAny as any).boardType)
+      : Array.isArray(reqAny.boardTypes) && reqAny.boardTypes.length
+      ? reqAny.boardTypes.map((b: any) => BOARD_LABEL[b] || b).join(", ")
       : null;
 
   const requestAccomText =
-    (req as any).accommodationType
-      ? ACCOM_LABEL[String((req as any).accommodationType)] || String((req as any).accommodationType)
-      : null;
+    (reqAny as any).accommodationType
+      ? ACCOM_LABEL[String((reqAny as any).accommodationType)] || String((reqAny as any).accommodationType)
+      : ((reqAny as any).hotelType ? (ACCOM_LABEL[String((reqAny as any).hotelType)] || String((reqAny as any).hotelType)) : null);
 
   const requestFeatures =
-    Array.isArray((req as any).featureKeys) && (req as any).featureKeys.length > 0
-      ? ((req as any).featureKeys as string[]).map((k) => FEATURE_LABEL[k] || k)
-      : req.hotelFeaturePrefs && req.hotelFeaturePrefs.length > 0
-      ? req.hotelFeaturePrefs.map((k) => FEATURE_LABEL[k] || k)
+    Array.isArray((reqAny as any).featureKeys) && (reqAny as any).featureKeys.length
+      ? ((reqAny as any).featureKeys as string[]).map((k) => FEATURE_LABEL[k] || k)
+      : Array.isArray(reqAny.hotelFeaturePrefs) && reqAny.hotelFeaturePrefs.length
+      ? reqAny.hotelFeaturePrefs.map((k: any) => FEATURE_LABEL[k] || k)
       : [];
 
   const requestFeatureNote =
-    (req as any).extraFeaturesText ||
-    req.hotelFeatureNote ||
-    (req as any).locationNote ||
-    req.boardTypeNote ||
+    (reqAny as any).extraFeaturesText ||
+    reqAny.hotelFeatureNote ||
+    (reqAny as any).locationNote ||
+    reqAny.boardTypeNote ||
     null;
+    // ✅ notesAll her zaman string olsun (TS hatası bitiyor)
+const notesAll: string = String(
+  (req as any).notes ||
+  (req as any).note ||
+  (req as any).generalNote ||
+  (req as any).contactNote ||
+  (req as any).locationNote ||
+  (req as any).boardTypeNote ||
+  (req as any).hotelFeatureNote ||
+  (req as any).extraFeaturesText ||
+  (req as any).flightNotes ||
+  (req as any).transferNotes ||
+  (req as any).activities ||
+  ""
+).trim();
 
-  const childrenAges: number[] =
-    Array.isArray((req as any).childrenAges) ? (req as any).childrenAges : [];
 
-  const nearMe = Boolean((req as any).nearMe);
-  const nearMeKm = (req as any).nearMeKm ?? null;
+  const nearMe = Boolean((reqAny as any).nearMe);
+  const nearMeKm = (reqAny as any).nearMeKm ?? null;
 
-  // Cevap süresi alanları (iki farklı model var)
   const responseText = (() => {
-    const mins = req.responseDeadlineMinutes ?? null;
-    const amt = (req as any).responseTimeAmount ?? null;
-    const unit = (req as any).responseTimeUnit ?? null;
-
+    const mins = reqAny.responseDeadlineMinutes ?? null;
+    const amt = (reqAny as any).responseTimeAmount ?? null;
+    const unit = (reqAny as any).responseTimeUnit ?? null;
     if (amt && unit) return `${amt} ${unit === "minutes" ? "dakika" : unit === "hours" ? "saat" : "gün"}`;
     if (mins) return `${mins} dakika`;
     return null;
   })();
 
+  // oda talepleri
+  const guestWantsRoomsText = (() => {
+    const rows = Array.isArray(reqAny.roomTypeRows) ? reqAny.roomTypeRows : [];
+    const counts = reqAny.roomTypeCounts && typeof reqAny.roomTypeCounts === "object" ? reqAny.roomTypeCounts : null;
+    const types = Array.isArray(reqAny.roomTypes) ? reqAny.roomTypes : [];
+
+    if (rows.length) return rows.map((r: any) => `${roomTypeLabel(r?.typeKey)}: ${safeNum(r?.count, 1)}`).join(" • ");
+    if (counts) return Object.entries(counts).map(([k, v]: any) => `${roomTypeLabel(k)}: ${v}`).join(" • ");
+    if (types.length) return types.map((t: any) => roomTypeLabel(t)).join(", ");
+    return "Farketmez";
+  })();
+
+  // ---------------- Offer normalize ----------------
+  const offerCurrency = offerAny?.currency ?? "TRY";
+  const offerTotalPrice = safeNum(offerAny?.totalPrice, 0);
+  const offerNote = offerAny?.note ?? null;
+
+  const cancelText = offerAny
+    ? cancellationPolicyLabelForOffer(offerAny.cancellationPolicyType, offerAny.cancellationPolicyDays ?? undefined)
+    : null;
+
+  const roomBreakdown = offerAny && Array.isArray(offerAny.roomBreakdown) ? offerAny.roomBreakdown : [];
+
+  // otel room types (profil)
+  const hotelRoomTypes = useMemo(() => {
+    const hp = (liveHotel as any)?.hotelProfile ?? {};
+    const rt = hp.roomTypes ?? hp.rooms ?? hp.roomCatalog ?? hp.roomTypeCatalog ?? [];
+    return Array.isArray(rt) ? rt : [];
+  }, [liveHotel]);
+
+  function findRoomProfile(roomTypeId?: string | null, roomTypeName?: string | null) {
+    if (!roomTypeId && !roomTypeName) return null;
+    if (roomTypeId) {
+      const hit = hotelRoomTypes.find((r: any) => r?.id === roomTypeId);
+      if (hit) return hit;
+    }
+    if (roomTypeName) {
+      const hit = hotelRoomTypes.find(
+        (r: any) => String(r?.name || r?.title || "").toLowerCase() === String(roomTypeName).toLowerCase()
+      );
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function openRoomModal(rb: any) {
+    const prof = findRoomProfile(rb?.roomTypeId ?? null, rb?.roomTypeName ?? null);
+    setActiveRoomProfile(
+      prof || {
+        id: rb?.roomTypeId ?? null,
+        name: rb?.roomTypeName ?? "Oda",
+        shortDescription: rb?.roomShortDescription ?? null,
+        description: rb?.roomDescription ?? null,
+        maxAdults: null,
+        maxChildren: null,
+        imageUrls: []
+      }
+    );
+    setRoomModalOpen(true);
+  }
+
+  function closeRoomModal() {
+    setRoomModalOpen(false);
+    setActiveRoomProfile(null);
+  }
+
+  const hotelOffersRoomsText = (() => {
+    if (!roomBreakdown.length) return "Oda kırılımı yok";
+    return roomBreakdown.map((rb: any) => rb?.roomTypeName || rb?.roomTypeId || "Oda").join(", ");
+  })();
+
+  const roomsMatchText =
+    guestWantsRoomsText === hotelOffersRoomsText ? "Eşleşiyor" : "Farklı olabilir";
+
+  // ---------------- Timeline (priceHistory + TL/% rozet) ----------------
+  type TimelineItem = {
+    actor: "hotel" | "guest" | "system";
+    kind: "initial" | "update" | "counter" | "current" | "accepted" | "rejected" | "info";
+    price: number | null;
+    note: string;
+    createdAt: any | null;
+  };
+
+  const timeline = useMemo<TimelineItem[]>(() => {
+    if (!offerAny) return [];
+
+    const rawHist = Array.isArray(offerAny.priceHistory) ? offerAny.priceHistory : [];
+    const sorted = rawHist
+      .slice()
+      .map((h: any) => ({
+        actor: (h?.actor === "guest" ? "guest" : "hotel") as "hotel" | "guest",
+        kind: (h?.kind || (h?.actor === "guest" ? "counter" : "update")) as any,
+        price: Number.isFinite(Number(h?.price)) ? Number(h.price) : null,
+        note: String(h?.note ?? ""),
+        createdAt: h?.createdAt ?? null
+      }))
+      .sort((a: any, b: any) => toMillis(a?.createdAt) - toMillis(b?.createdAt));
+
+    const out: TimelineItem[] = [];
+    const nowPrice = Number.isFinite(Number(offerAny.totalPrice)) ? Number(offerAny.totalPrice) : null;
+
+    const hasAccepted = String(offerAny.status || "") === "accepted";
+    const hasRejected = String(offerAny.status || "") === "rejected";
+
+    if (sorted.length > 0) {
+      const hasInitial = sorted.some((x: any) => x.actor === "hotel" && x.kind === "initial" && x.price && x.price > 0);
+      if (!hasInitial) {
+        out.push({
+          actor: "system",
+          kind: "info",
+          price: null,
+          note: "Başlangıç (initial) kaydı yok. Otel initial yazmadığı için ilk fiyat bilinmiyor.",
+          createdAt: offerAny.createdAt ?? null
+        });
+      }
+
+      for (const h of sorted) {
+        out.push({
+          actor: h.actor,
+          kind: h.kind === "initial" ? "initial" : h.kind === "counter" ? "counter" : "update",
+          price: h.price,
+          note:
+            h.note ||
+            (h.kind === "initial" ? "İlk teklif" : h.kind === "counter" ? "Misafir karşı teklif" : "Fiyat güncellendi"),
+          createdAt: h.createdAt
+        });
+      }
+
+      // current canlı satırı (history ile aynıysa ekleme)
+      const lastHistPrice = [...out].reverse().find((x) => typeof x.price === "number" && (x.price as number) > 0)?.price ?? null;
+      if (nowPrice && (!lastHistPrice || lastHistPrice !== nowPrice)) {
+        out.push({
+          actor: "system",
+          kind: "current",
+          price: nowPrice,
+          note: "Güncel fiyat (canlı)",
+          createdAt: offerAny.updatedAt ?? null
+        });
+      }
+
+      if (hasAccepted) {
+        out.push({ actor: "system", kind: "accepted", price: nowPrice ?? lastHistPrice, note: "Kabul edildi", createdAt: offerAny.acceptedAt ?? null });
+      }
+      if (hasRejected) {
+        out.push({ actor: "system", kind: "rejected", price: nowPrice ?? lastHistPrice, note: "Reddedildi", createdAt: offerAny.rejectedAt ?? null });
+      }
+
+      return out;
+    }
+
+    // history yoksa: tek fiyat
+    if (nowPrice && nowPrice > 0) {
+      out.push({ actor: "hotel", kind: "initial", price: nowPrice, note: "Tek fiyat (priceHistory yok)", createdAt: offerAny.createdAt ?? null });
+      return out;
+    }
+
+    out.push({ actor: "system", kind: "info", price: null, note: "Fiyat bilgisi bulunamadı.", createdAt: offerAny.createdAt ?? null });
+    return out;
+  }, [offerAny]);
+
+  // initial gerçek (header için)
+  const initialPrice = useMemo(() => {
+    if (!offerAny) return null;
+    const rawHist = Array.isArray(offerAny.priceHistory) ? offerAny.priceHistory : [];
+    const sorted = rawHist.slice().sort((a: any, b: any) => toMillis(a?.createdAt) - toMillis(b?.createdAt));
+    const init = sorted.find((h: any) => h?.actor === "hotel" && h?.kind === "initial" && Number(h?.price) > 0);
+    return init ? Number(init.price) : null;
+  }, [offerAny]);
+
+  const currentPrice = offerAny ? safeNum(offerAny.totalPrice, 0) : 0;
+
+  const overallDelta = useMemo(() => {
+    if (!initialPrice || initialPrice <= 0) return null;
+    return currentPrice - initialPrice;
+  }, [initialPrice, currentPrice]);
+
+  const overallPct = useMemo(() => {
+    if (!initialPrice || initialPrice <= 0) return null;
+    return pctChange(initialPrice, currentPrice);
+  }, [initialPrice, currentPrice]);
+
+  // KVKK iletişim alanları (request içinde farklı isimler olabilir)
+  const contactName = pick(reqAny, ["contactName", "guestName", "contact.name", "createdByName"], null);
+  const contactEmail = pick(reqAny, ["contactEmail", "guestEmail", "contact.email", "email", "createdByEmail"], null);
+  const contactPhone = pick(reqAny, ["contactPhone", "guestPhone", "contact.phone", "createdByPhone"], null);
+  const contactCompany = pick(reqAny, ["contactCompany", "company"], null);
+
+  const nameToShow = isUnlocked ? safeStr(contactName, "Misafir") : maskName(contactName);
+  const emailToShow = isUnlocked ? safeStr(contactEmail) : maskEmail(contactEmail);
+  const phoneToShow = isUnlocked ? safeStr(contactPhone) : maskPhone(contactPhone);
+  const companyToShow = isUnlocked ? safeStr(contactCompany) : maskCompany(contactCompany);
+
+  // JSON kopyala
+  const prettyReqJson = useMemo(() => {
+    try {
+      return JSON.stringify(reqAny, (_k, v) => {
+        if (v && typeof v === "object" && typeof (v as any).toDate === "function") return (v as any).toDate().toISOString();
+        return v;
+      }, 2);
+    } catch {
+      return safeJSON(reqAny);
+    }
+  }, [reqAny]);
+
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/70">
       <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
 
-      <div className="relative mt-10 w-full max-w-4xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-xl shadow-slate-950/60 max-h-[86vh] overflow-y-auto text-[0.8rem] space-y-4 animate-[fadeIn_.15s_ease-out]">
+      <div className="relative mt-10 w-full max-w-5xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-xl shadow-slate-950/60 max-h-[86vh] overflow-y-auto text-[0.8rem] space-y-4">
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
@@ -1560,15 +2100,26 @@ function RequestDetailModal({
                   Otel talebi
                 </span>
               )}
-              
 
               <span className="inline-flex items-center rounded-full border border-slate-700 bg-slate-900 px-2.5 py-0.5 text-[0.7rem] text-slate-300">
                 KVKK: Kimlik gizli
               </span>
+
+              {reqLoading ? (
+                <span className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-[0.7rem] text-slate-200">
+                  Talep okunuyor…
+                </span>
+              ) : null}
+
+              {offerLoading ? (
+                <span className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-[0.7rem] text-slate-200">
+                  Teklif güncelleniyor…
+                </span>
+              ) : null}
             </div>
 
             <p className="text-[0.75rem] text-slate-400">
-              Misafir: <span className="text-slate-200 font-semibold">{maskName(req.guestName)}</span>
+              Misafir: <span className="text-slate-200 font-semibold">{maskName(pick(reqAny, ["guestName"], "Misafir"))}</span>
               <span className="text-slate-500"> (rezervasyon onaylanana kadar maskeli)</span>
             </p>
           </div>
@@ -1588,11 +2139,11 @@ function RequestDetailModal({
           <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 space-y-1">
             <p className="text-[0.7rem] text-slate-400">Konaklama</p>
             <p className="text-slate-100 font-semibold">
-              {req.city}
-              {req.district ? ` / ${req.district}` : ""}
+              {safeStr(reqAny.city)}
+              {reqAny.district ? ` / ${reqAny.district}` : ""}
             </p>
             <p className="text-[0.75rem] text-slate-300">
-              {req.checkIn} → {req.checkOut}{" "}
+              {safeStr(reqAny.checkIn)} → {safeStr(reqAny.checkOut)}{" "}
               <span className="text-slate-400">• {nights} gece</span>
             </p>
 
@@ -1607,20 +2158,16 @@ function RequestDetailModal({
           <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 space-y-1">
             <p className="text-[0.7rem] text-slate-400">Kişi & Oda</p>
             <p className="text-slate-100 font-semibold">
-              {totalGuests} kişi{" "}
-              <span className="text-slate-400">•</span> {roomsCount} oda
+              {totalGuests} kişi <span className="text-slate-400">•</span> {roomsCount} oda
             </p>
             <p className="text-[0.75rem] text-slate-300">
-              Yetişkin: <span className="font-semibold">{req.adults}</span>{" "}
-              {`•`} Çocuk: <span className="font-semibold">{req.childrenCount ?? 0}</span>
+              Yetişkin: <span className="font-semibold">{adults}</span> • Çocuk:{" "}
+              <span className="font-semibold">{childrenCount}</span>
             </p>
 
-            {(req.childrenCount ?? 0) > 0 && childrenAges.length > 0 && (
+            {(childrenCount ?? 0) > 0 && childrenAges.length > 0 && (
               <p className="text-[0.75rem] text-slate-300">
-                Çocuk yaşları:{" "}
-                <span className="text-slate-100 font-semibold">
-                  {childrenAges.join(", ")}
-                </span>
+                Çocuk yaşları: <span className="text-slate-100 font-semibold">{childrenAges.join(", ")}</span>
               </p>
             )}
           </div>
@@ -1637,8 +2184,7 @@ function RequestDetailModal({
 
             {requestBoardText && (
               <p className="text-[0.75rem] text-slate-300">
-                Konaklama tipi:{" "}
-                <span className="text-slate-100 font-semibold">{requestBoardText}</span>
+                Konaklama tipi: <span className="text-slate-100 font-semibold">{requestBoardText}</span>
               </p>
             )}
 
@@ -1660,30 +2206,23 @@ function RequestDetailModal({
         <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4 space-y-2">
           <div className="flex items-center justify-between">
             <p className="text-[0.75rem] text-slate-200 font-semibold">Oda talepleri</p>
-            <span className="text-[0.7rem] text-slate-400">
-              (otel teklif verirken kontrol için)
-            </span>
+            <span className="text-[0.7rem] text-slate-400">(teklif verirken kontrol)</span>
           </div>
 
-          {isGroup && req.roomTypeRows && req.roomTypeRows.length > 0 ? (
+          {isGroup && Array.isArray(reqAny.roomTypeRows) && reqAny.roomTypeRows.length > 0 ? (
             <div className="grid md:grid-cols-2 gap-2">
-              {req.roomTypeRows.map((row, idx) => (
-                <div
-                  key={idx}
-                  className="rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2"
-                >
-                  <p className="text-slate-100 font-semibold">
-                    {roomTypeLabel(row.typeKey)}
-                  </p>
+              {reqAny.roomTypeRows.map((row: any, idx: number) => (
+                <div key={idx} className="rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2">
+                  <p className="text-slate-100 font-semibold">{roomTypeLabel(row.typeKey)}</p>
                   <p className="text-[0.75rem] text-slate-300">
                     Adet: <span className="font-semibold">{row.count}</span>
                   </p>
                 </div>
               ))}
             </div>
-          ) : req.roomTypes && req.roomTypes.length > 0 ? (
+          ) : Array.isArray(reqAny.roomTypes) && reqAny.roomTypes.length > 0 ? (
             <div className="flex flex-wrap gap-2">
-              {req.roomTypes.map((t, idx) => (
+              {reqAny.roomTypes.map((t: any, idx: number) => (
                 <span
                   key={idx}
                   className="inline-flex items-center rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-[0.7rem] text-slate-200"
@@ -1704,173 +2243,397 @@ function RequestDetailModal({
 
             {requestFeatures.length > 0 ? (
               <div className="flex flex-wrap gap-2">
-                {requestFeatures.map((f, idx) => (
-                  <span
-                    key={idx}
-                    className="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-[0.7rem] text-emerald-200"
-                  >
-                    {f}
-                  </span>
-                ))}
+              {requestFeatures.map((f: string, idx: number) => (
+  <span
+    key={`${f}-${idx}`}
+    className="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-[0.7rem] text-emerald-200"
+  >
+    {f}
+  </span>
+))}
+
               </div>
             ) : (
               <p className="text-[0.75rem] text-slate-400">Özellik seçilmemiş.</p>
             )}
 
-            {(req.hotelFeatureNote || (req as any).extraFeaturesText) && (
+            {requestFeatureNote ? (
               <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
-                <p className="text-[0.7rem] text-slate-400">Ek özellik notu</p>
-                <p className="text-[0.75rem] text-slate-200">
-                  {String(req.hotelFeatureNote || (req as any).extraFeaturesText)}
-                </p>
+                <p className="text-[0.7rem] text-slate-400">Ek özellik / Konum notu</p>
+                <p className="text-[0.75rem] text-slate-200 whitespace-pre-wrap">{String(requestFeatureNote)}</p>
               </div>
-            )}
+            ) : null}
           </div>
 
           <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4 space-y-2">
-            <p className="text-[0.75rem] text-slate-200 font-semibold">Misafirin notları</p>
+            <p className="text-[0.75rem] text-slate-200 font-semibold">Misafirin notları (tam)</p>
+          {notesAll.trim().length > 0 ? (
+  <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+    <p className="text-[0.75rem] text-slate-200 whitespace-pre-wrap">{notesAll}</p>
+  </div>
+) : (
+  <p className="text-[0.75rem] text-slate-400">Not yok.</p>
+)}
 
-            {(req.contactNote || req.boardTypeNote || (req as any).note || (req as any).locationNote) ? (
-              <div className="space-y-2">
-                {((req as any).note || null) && (
-                  <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
-                    <p className="text-[0.7rem] text-slate-400">Genel not</p>
-                    <p className="text-[0.75rem] text-slate-200">{String((req as any).note)}</p>
-                  </div>
-                )}
 
-                {(req.contactNote || null) && (
-                  <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
-                    <p className="text-[0.7rem] text-slate-400">İletişim notu</p>
-                    <p className="text-[0.75rem] text-slate-200">{req.contactNote}</p>
-                  </div>
-                )}
-
-                {((req as any).locationNote || null) && (
-                  <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
-                    <p className="text-[0.7rem] text-slate-400">Konum beklentisi</p>
-                    <p className="text-[0.75rem] text-slate-200">{String((req as any).locationNote)}</p>
-                  </div>
-                )}
-
-                {(req.boardTypeNote || null) && (
-                  <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
-                    <p className="text-[0.7rem] text-slate-400">Yeme-içme notu</p>
-                    <p className="text-[0.75rem] text-slate-200">{req.boardTypeNote}</p>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <p className="text-[0.75rem] text-slate-400">Not yok.</p>
-            )}
           </div>
         </div>
 
-        {/* KVKK İletişim (maskeli) */}
+        {/* KVKK İletişim (maskeli / unlocked) */}
         <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4 space-y-2">
           <div className="flex items-center justify-between">
             <p className="text-[0.75rem] text-slate-200 font-semibold">İletişim bilgileri</p>
-            <span className="text-[0.7rem] text-slate-400">Rezervasyona kadar maskeli</span>
+            <span className="text-[0.7rem] text-slate-400">{isUnlocked ? "Rezervasyon sonrası açık" : "Rezervasyona kadar maskeli"}</span>
           </div>
 
           <div className="grid md:grid-cols-2 gap-2">
             <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
               <p className="text-[0.7rem] text-slate-400">Ad soyad</p>
-              <p className="text-[0.8rem] text-slate-100 font-semibold">{maskName(req.guestName)}</p>
+              <p className="text-[0.8rem] text-slate-100 font-semibold">{nameToShow}</p>
             </div>
 
             <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
               <p className="text-[0.7rem] text-slate-400">Firma / kurum</p>
-              <p className="text-[0.8rem] text-slate-100 font-semibold">{maskCompany(req.contactCompany)}</p>
+              <p className="text-[0.8rem] text-slate-100 font-semibold">{companyToShow}</p>
             </div>
 
             <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
               <p className="text-[0.7rem] text-slate-400">E-posta</p>
-              <p className="text-[0.8rem] text-slate-100 font-semibold">{maskEmail(req.contactEmail)}</p>
+              <p className="text-[0.8rem] text-slate-100 font-semibold">{emailToShow}</p>
             </div>
 
             <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
               <p className="text-[0.7rem] text-slate-400">Telefon</p>
-              <p className="text-[0.8rem] text-slate-100 font-semibold">{maskPhone(req.contactPhone)}</p>
+              <p className="text-[0.8rem] text-slate-100 font-semibold">{phoneToShow}</p>
             </div>
           </div>
 
           <p className="text-[0.7rem] text-slate-500">
-            KVKK gereği bu bilgiler rezervasyon onaylanana kadar gizlenir. Rezervasyon oluştuğunda,
-            otel & misafir “Rezervasyonlar” ekranında tam bilgileri görür.
+            KVKK gereği bu bilgiler rezervasyon onaylanana kadar gizlenir. Rezervasyon oluştuğunda otel & misafir “Rezervasyonlar” ekranında tam bilgileri görür.
           </p>
         </div>
 
-        {/* Bu otele ait teklif (varsa) */}
-        {offer && (
-          <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-[0.8rem] text-slate-100 font-semibold">Bu talep için verdiğin teklif</p>
-              <span className="inline-flex items-center rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-[0.7rem] text-emerald-300">
-                {offer.totalPrice} {offer.currency} • %{offer.commissionRate}
-              </span>
+        {/* ✅ Bu talep için verdiğin teklif (varsa) */}
+        {offerAny ? (
+          <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 space-y-3">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="text-[0.85rem] text-slate-100 font-semibold">Bu talep için verdiğin teklif</p>
+                <p className="text-[0.75rem] text-slate-400">
+                  Durum: <span className="text-slate-200 font-semibold">{safeStr(offerAny.status, "sent")}</span>
+                  {offerAny.createdAt ? <> • Gönderim: <span className="text-slate-200">{toTR(offerAny.createdAt)}</span></> : null}
+                  {offerAny.updatedAt ? <> • Güncelleme: <span className="text-slate-200">{toTR(offerAny.updatedAt)}</span></> : null}
+                </p>
+              </div>
+
+              <div className="text-right">
+                <p className="text-[0.7rem] text-slate-400">Toplam</p>
+                <p className="text-emerald-300 font-extrabold text-base">{money(offerTotalPrice, offerCurrency)}</p>
+                {initialPrice != null ? (
+                  <p className="text-[0.72rem] text-slate-400 mt-1">
+                    Başlangıç: <span className="text-slate-200 font-semibold">{money(initialPrice, offerCurrency)}</span>
+                  </p>
+                ) : (
+                  <p className="text-[0.72rem] text-amber-200 mt-1">Başlangıç: initial yok (bilinmiyor)</p>
+                )}
+
+                {overallDelta != null && overallPct != null ? (
+                  <p className={`text-[0.72rem] mt-1 ${overallDelta <= 0 ? "text-emerald-200" : "text-red-200"}`}>
+                    {overallDelta <= 0 ? "İndirim" : "Artış"}:{" "}
+                    <span className="font-semibold">
+                      {overallDelta > 0 ? "+" : ""}
+                      {Math.round(overallDelta).toLocaleString("tr-TR")} {offerCurrency}
+                    </span>{" "}
+                    <span className="opacity-90">({overallPct > 0 ? "+" : ""}{overallPct}%)</span>
+                  </p>
+                ) : null}
+              </div>
             </div>
 
-            {cancelText && (
+            {cancelText ? (
               <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
                 <p className="text-[0.7rem] text-slate-400">İptal politikası</p>
                 <p className="text-[0.75rem] text-slate-200">{cancelText}</p>
               </div>
-            )}
+            ) : null}
 
-            {offer.note && (
+            {offerNote ? (
               <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
                 <p className="text-[0.7rem] text-slate-400">Misafire not</p>
-                <p className="text-[0.75rem] text-slate-200">{offer.note}</p>
+                <p className="text-[0.75rem] text-slate-200 whitespace-pre-wrap">{String(offerNote)}</p>
               </div>
-            )}
+            ) : null}
 
-            {offer.roomBreakdown && offer.roomBreakdown.length > 0 && (
-              <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
-                <p className="text-[0.7rem] text-slate-400">Oda kırılımı (teklif)</p>
-                <div className="mt-2 space-y-1">
-                  {offer.roomBreakdown.map((rb, idx) => (
-                    <div key={idx} className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="text-slate-100 font-semibold">
-                        Oda {idx + 1}: {rb.roomTypeName || "Oda"}
-                      </span>
-                      <span className="text-[0.75rem] text-slate-300">
-                        {rb.nights ?? nights} gece × {Number(rb.nightlyPrice ?? 0).toLocaleString("tr-TR")}{" "}
-                        {offer.currency}{" "}
-                        <span className="text-slate-500">=</span>{" "}
-                        <span className="text-emerald-300 font-semibold">
-                          {Number(rb.totalPrice ?? 0).toLocaleString("tr-TR")} {offer.currency}
-                        </span>
-                      </span>
-                    </div>
-                  ))}
+            {/* Oda kırılımı (teklif) */}
+            <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+              <p className="text-[0.7rem] text-slate-400">Oda kırılımı (teklif) — tıkla, oda detayını aç</p>
+
+              {roomBreakdown.length ? (
+                <div className="mt-2 grid gap-2 md:grid-cols-2">
+                  {roomBreakdown.map((rb: any, idx: number) => {
+                    const roomLabel = safeStr(rb?.roomTypeName || rb?.name || "Oda");
+                    const n = safeNum(rb?.nights, nights);
+                    const nightly = safeNum(rb?.nightlyPrice, 0);
+                    const total = safeNum(rb?.totalPrice, nightly * n);
+
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => openRoomModal(rb)}
+                        className="rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 hover:bg-white/[0.03] text-left"
+                        title="Oda detayını aç"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="text-slate-100 font-semibold flex items-center gap-2">
+                              {roomLabel}
+                              <span className="text-slate-400 text-[0.75rem]">↗</span>
+                            </p>
+                            <p className="text-[0.75rem] text-slate-400">
+                              {n} gece × {nightly.toLocaleString("tr-TR")} {offerCurrency}
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-[0.7rem] text-slate-400">Toplam</p>
+                            <p className="text-emerald-300 font-extrabold">{money(total, offerCurrency)}</p>
+                            <p className="text-[0.7rem] text-slate-500">Detay ▶</p>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
+              ) : (
+                <p className="text-[0.75rem] text-slate-400 mt-2">Bu teklifte oda kırılımı yok.</p>
+              )}
+            </div>
 
-                <p className="text-[0.7rem] text-slate-500 mt-2">
-                  Oda tipi değişiklikleri (KVKK + fiyat bütünlüğü nedeniyle) ilk tekliften sonra kilitlenir.
-                </p>
+            {/* Fiyat geçmişi / pazarlık (TL/% rozet) */}
+            <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[0.75rem] text-slate-200 font-semibold">Fiyat geçmişi / pazarlık</p>
+                <span className="text-[0.7rem] text-slate-400">Adım: {timeline.length}</span>
               </div>
-            )}
-          </div>
-        )}
 
+              <div className="mt-2 grid gap-2 md:grid-cols-2">
+                {timeline.map((h: TimelineItem, i: number) => {
+                  // prev price
+                  let prev: number | null = null;
+                  for (let j = i - 1; j >= 0; j--) {
+                    const p = timeline[j]?.price;
+                    if (typeof p === "number" && p > 0) { prev = p; break; }
+                  }
+                  const cur = typeof h.price === "number" ? h.price : null;
+
+                  const canDelta = prev != null && cur != null && prev > 0 && cur > 0;
+                  const delta = canDelta ? (cur! - prev!) : null;
+                  const pct = canDelta ? pctChange(prev!, cur!) : null;
+
+                  const deltaLabel =
+                    delta == null || delta === 0 ? "" : `${delta > 0 ? "+" : ""}${Math.round(delta).toLocaleString("tr-TR")} ${offerCurrency}`;
+                  const pctLabel =
+                    pct == null || pct === 0 ? "" : `${pct > 0 ? "+" : ""}${pct}%`;
+
+                  const actorLabel = h.actor === "hotel" ? "Otel" : h.actor === "guest" ? "Misafir" : "Sistem";
+                  const kindLabel =
+                    h.kind === "initial" ? "İlk fiyat" :
+                    h.kind === "update" ? "Güncelleme" :
+                    h.kind === "counter" ? "Karşı teklif" :
+                    h.kind === "current" ? "Güncel" :
+                    h.kind === "accepted" ? "Kabul" :
+                    h.kind === "rejected" ? "Ret" : "Bilgi";
+
+                  const actorTone =
+                    h.actor === "guest"
+                      ? "border-amber-500/40 bg-amber-500/10 text-amber-200"
+                      : h.actor === "hotel"
+                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+                      : "border-slate-700 bg-slate-950/60 text-slate-200";
+
+                  return (
+                    <div key={i} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[0.65rem] ${actorTone}`}>
+                              {actorLabel}
+                            </span>
+                            <span className="text-slate-100 font-semibold">{kindLabel}</span>
+                          </div>
+                          {toTR(h.createdAt) ? <div className="text-[0.7rem] text-slate-500">{toTR(h.createdAt)}</div> : null}
+                          <div className="text-[0.75rem] text-slate-300 whitespace-pre-wrap">{h.note || "—"}</div>
+                        </div>
+
+                        <div className="text-right space-y-2">
+                          <span className="inline-flex items-center rounded-md border border-sky-500/35 bg-sky-500/10 px-2 py-1 text-[0.72rem] text-sky-200">
+                            {cur != null ? money(cur, offerCurrency) : "—"}
+                          </span>
+
+                          <div className="flex justify-end gap-2 flex-wrap">
+                            {deltaLabel ? (
+                              <span className={`inline-flex items-center rounded-md border px-2 py-1 text-[0.72rem] ${deltaTone(delta!)}`}>
+                                {deltaLabel}
+                              </span>
+                            ) : null}
+                            {pctLabel ? (
+                              <span className={`inline-flex items-center rounded-md border px-2 py-1 text-[0.72rem] ${deltaTone(delta!)}`}>
+                                {pctLabel}
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {/* DB FULL alanları */}
+        <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[0.8rem] text-slate-100 font-semibold">Misafir talebi (DB’deki tüm bilgiler)</p>
+            <button
+              type="button"
+              onClick={() => {
+                try {
+                  navigator.clipboard.writeText(prettyReqJson);
+                  alert("Talep JSON panoya kopyalandı.");
+                } catch {}
+              }}
+              className="rounded-md border border-slate-700 px-3 py-2 text-[0.75rem] text-slate-200 hover:border-slate-500"
+            >
+              Kopyala
+            </button>
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-2">
+            {[
+              { k: "Şehir", v: reqAny.city },
+              { k: "İlçe", v: reqAny.district },
+              { k: "Check-in", v: reqAny.checkIn },
+              { k: "Check-out", v: reqAny.checkOut },
+              { k: "Yetişkin", v: reqAny.adults },
+              { k: "Çocuk", v: reqAny.childrenCount },
+              { k: "Çocuk yaşları", v: reqAny.childrenAges },
+              { k: "Oda sayısı", v: reqAny.roomsCount },
+              { k: "Board/Plan", v: requestBoardText || reqAny.boardTypes || reqAny.boardType },
+              { k: "Tesis türü", v: requestAccomText || (reqAny as any).accommodationType || (reqAny as any).hotelType },
+              { k: "Yıldız", v: starsText },
+              { k: "İstenen özellikler", v: requestFeatures.length ? requestFeatures.join(" • ") : "—" },
+              { k: "Ek özellik notu", v: requestFeatureNote },
+              { k: "Yakınımda", v: nearMe ? `Açık (${nearMeKm ?? 10} km)` : "Kapalı" }
+            ].map((it) => (
+              <div key={it.k} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                <p className="text-[0.72rem] text-slate-400">{it.k}</p>
+                <pre className="text-slate-100 text-sm mt-1 whitespace-pre-wrap">{renderValue(it.v)}</pre>
+              </div>
+            ))}
+          </div>
+          
+
+          <details className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+            <summary className="cursor-pointer text-[0.8rem] text-slate-200 font-semibold">Tüm alanları aç (JSON)</summary>
+            <pre className="mt-3 whitespace-pre-wrap text-[0.72rem] text-slate-300 overflow-x-auto">{prettyReqJson}</pre>
+          </details>
+        </div>
+
+        {/* Footer */}
         <div className="flex justify-end pt-1">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-slate-700 px-4 py-1.5 text-[0.75rem] text-slate-200 hover:border-emerald-400 transition"
+            className="rounded-md border border-slate-700 px-4 py-2 text-[0.75rem] text-slate-200 hover:border-emerald-400 transition"
           >
             Kapat
           </button>
         </div>
       </div>
 
-      <style jsx>{`
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(6px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
+      {/* ROOM MODAL */}
+      {roomModalOpen && activeRoomProfile ? (
+        <RoomProfileModal room={activeRoomProfile} onClose={closeRoomModal} />
+      ) : null}
+    </div>
+  );
+}
+function RoomProfileModal({
+  room,
+  onClose
+}: {
+  room: any;
+  onClose: () => void;
+}) {
+  const name = room?.name || room?.title || room?.roomTypeName || "Oda";
+  const shortDesc = room?.shortDescription || "";
+  const desc = room?.description || room?.details || "";
+
+  const maxAdults = room?.maxAdults ?? room?.capacity ?? "—";
+  const maxChildren = room?.maxChildren ?? "—";
+
+  const images: string[] = useMemo(() => {
+    const list = [
+      ...(Array.isArray(room?.imageUrls) ? room.imageUrls : []),
+      ...(Array.isArray(room?.images) ? room.images : []),
+      ...(Array.isArray(room?.gallery) ? room.gallery : []),
+      ...(Array.isArray(room?.photos) ? room.photos : [])
+    ];
+    return list.filter(Boolean);
+  }, [room]);
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-start justify-center bg-black/70">
+      <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
+
+      <div className="relative mt-12 w-full max-w-3xl rounded-2xl border border-slate-800 bg-slate-950/95 p-5 shadow-2xl max-h-[85vh] overflow-y-auto space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-base font-extrabold text-slate-100">{name}</h3>
+            <p className="text-[0.75rem] text-slate-400 mt-1">
+              Kapasite: <span className="text-slate-200">{String(maxAdults)}</span> yetişkin
+              {" "}• Çocuk: <span className="text-slate-200">{String(maxChildren)}</span>
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:border-emerald-400"
+          >
+            Kapat ✕
+          </button>
+        </div>
+
+        {images.length ? (
+          <div className="grid gap-2 md:grid-cols-3">
+            {images.slice(0, 9).map((src, i) => (
+              <div key={i} className="rounded-xl overflow-hidden border border-slate-800 bg-slate-900/40">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={src} alt={`room-${i}`} className="w-full h-32 object-cover" />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-slate-400 text-sm">
+            Bu oda için görsel yok.
+          </div>
+        )}
+
+        {shortDesc ? (
+          <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+            <p className="text-[0.75rem] text-slate-400 mb-1">Kısa açıklama</p>
+            <p className="text-slate-100 text-sm whitespace-pre-wrap">{shortDesc}</p>
+          </div>
+        ) : null}
+
+        <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+          <p className="text-[0.75rem] text-slate-400 mb-1">Detay</p>
+          <p className="text-slate-100 text-sm whitespace-pre-wrap">{desc || "Açıklama yok."}</p>
+        </div>
+      </div>
     </div>
   );
 }

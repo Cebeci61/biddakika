@@ -2997,12 +2997,7 @@ function OfferDetailModal({
               <p className="text-slate-100 mt-1 whitespace-pre-wrap">{safeStr(notesAll || "—")}</p>
             </div>
 
-            <details className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-              <summary className="cursor-pointer text-[0.8rem] text-slate-200 font-semibold">Tüm alanları aç (JSON)</summary>
-              <pre className="mt-3 whitespace-pre-wrap text-[0.72rem] text-slate-300 overflow-x-auto">
-{JSON.stringify(reqAny, null, 2)}
-              </pre>
-            </details>
+      
           </div>
 
           {/* Oda eşleşmesi (adet) */}

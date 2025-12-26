@@ -5,8 +5,9 @@ import DashboardPanel from "./DashboardPanel";
 import RequestsPanel from "./RequestsPanel";
 import OffersPanel from "./OffersPanel";
 import UsersAccountingPanel from "./UsersAccountingPanel";
+import HotelInvoicesPanel from "./HotelInvoicesPanel";
 
-export type AdminTabKey = "dashboard" | "requests" | "offers" | "users_accounting";
+export type AdminTabKey = "dashboard" | "requests" | "offers" | "users_accounting" | "hotel_invoices";
 
 const TABS: {
   key: AdminTabKey;
@@ -18,8 +19,10 @@ const TABS: {
   { key: "dashboard", label: "Genel Bakış", desc: "KPI, analiz, sistem sağlığı", icon: "📊", group: "Operasyon" },
   { key: "requests", label: "Talepler", desc: "Talep → teklif → rezervasyon akışı", icon: "🧾", group: "Operasyon" },
   { key: "offers", label: "Teklifler", desc: "İlan tarihi, indirim, gizle/göster", icon: "💬", group: "Operasyon" },
-  { key: "users_accounting", label: "Üyeler & Muhasebe", desc: "Kullanıcı, cari, komisyon, rapor", icon: "🏦", group: "Muhasebe" },
+  { key: "users_accounting", label: "Üyeler & Muhasebe", desc: "Kullanıcılar, cari, komisyon, rapor", icon: "🏦", group: "Muhasebe" },
+  { key: "hotel_invoices", label: "Otel Faturaları", desc: "Aylık komisyon • ödeme • itiraz", icon: "🧾", group: "Muhasebe" },
 ];
+
 
 export default function AdminShell() {
   const [activeTab, setActiveTab] = useState<AdminTabKey>("dashboard");
@@ -46,6 +49,9 @@ export default function AdminShell() {
         return <UsersAccountingPanel />;
       default:
         return <DashboardPanel />;
+        case "hotel_invoices":
+  return <HotelInvoicesPanel />;
+
     }
   }, [activeTab]);
 
