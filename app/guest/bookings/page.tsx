@@ -96,6 +96,19 @@ interface Booking {
   checkIn: string;
   checkOut: string;
   nights?: number;
+    // ✅ saat / erken-geç / aynı gün
+  checkInTime?: string | null;
+  checkOutTime?: string | null;
+
+  sameDayStay?: boolean | null;
+
+  earlyCheckInWanted?: boolean | null;
+  earlyCheckInTime?: string | null;
+
+  lateCheckOutWanted?: boolean | null;
+  lateCheckOutFrom?: string | null;
+  lateCheckOutTo?: string | null;
+
 
   adults?: number | null;
   childrenCount?: number | null;
@@ -139,6 +152,19 @@ interface RequestDoc {
   district?: string | null;
   checkIn?: string;
   checkOut?: string;
+    // ✅ saat / erken-geç / aynı gün
+  checkInTime?: string | null;
+  checkOutTime?: string | null;
+
+  sameDayStay?: boolean | null;
+
+  earlyCheckInWanted?: boolean | null;
+  earlyCheckInTime?: string | null;
+
+  lateCheckOutWanted?: boolean | null;
+  lateCheckOutFrom?: string | null;
+  lateCheckOutTo?: string | null;
+
   adults?: number;
   childrenCount?: number;
   childrenAges?: number[];
@@ -611,6 +637,39 @@ function MiniField({ label, value }: { label: string; value: string }) {
 /* =======================
    MAIN PAGE
 ======================= */
+// ✅ mesajlara otomatik talep özeti eklemek için
+function buildAutoTimeNote(b: any) {
+  if (!b) return "";
+
+  const safeStrLocal = (v: any, fallback = "—") => {
+    if (v === null || v === undefined) return fallback;
+    const s = String(v).trim();
+    return s.length ? s : fallback;
+  };
+
+  const parts: string[] = [];
+
+  const checkInTime = safeStrLocal(b?.checkInTime, "");
+  const checkOutTime = safeStrLocal(b?.checkOutTime, "");
+
+  if (checkInTime) parts.push(`Check-in saati: ${checkInTime}`);
+  if (checkOutTime) parts.push(`Check-out saati: ${checkOutTime}`);
+
+  if (b?.sameDayStay) parts.push("Aynı gün konaklama");
+
+  if (b?.earlyCheckInWanted) {
+    parts.push(`Erken giriş istiyoruz: ${safeStrLocal(b?.earlyCheckInTime, "—")}`);
+  }
+
+  if (b?.lateCheckOutWanted) {
+    parts.push(`Geç çıkış istiyoruz: ${safeStrLocal(b?.lateCheckOutFrom, "—")} - ${safeStrLocal(b?.lateCheckOutTo, "—")}`);
+  }
+
+  // hiçbir şey yoksa boş dön
+  if (!parts.length) return "";
+
+  return `⏱️ Talep özeti:\n- ${parts.join("\n- ")}`;
+}
 
 export default function GuestBookingsPage() {
   const { profile, loading: authLoading } = useAuth();
@@ -737,6 +796,19 @@ export default function GuestBookingsPage() {
 
               checkIn: v.checkIn ?? v.dateFrom ?? "",
               checkOut: v.checkOut ?? v.dateTo ?? "",
+                // ✅ saat / erken-geç / aynı gün (booking içinde varsa)
+  checkInTime: v.checkInTime ?? null,
+  checkOutTime: v.checkOutTime ?? null,
+
+  sameDayStay: v.sameDayStay ?? false,
+
+  earlyCheckInWanted: v.earlyCheckInWanted ?? false,
+  earlyCheckInTime: v.earlyCheckInTime ?? null,
+
+  lateCheckOutWanted: v.lateCheckOutWanted ?? false,
+  lateCheckOutFrom: v.lateCheckOutFrom ?? null,
+  lateCheckOutTo: v.lateCheckOutTo ?? null,
+
 
               adults: v.adults ?? v.paxAdults ?? null,
               childrenCount: v.childrenCount ?? v.paxChildren ?? null,
@@ -808,6 +880,19 @@ export default function GuestBookingsPage() {
               district: rv.district ?? null,
               checkIn: rv.checkIn ?? rv.dateFrom ?? null,
               checkOut: rv.checkOut ?? rv.dateTo ?? null,
+                // ✅ saat / erken-geç / aynı gün (request içinde)
+  checkInTime: rv.checkInTime ?? null,
+  checkOutTime: rv.checkOutTime ?? null,
+
+  sameDayStay: rv.sameDayStay ?? false,
+
+  earlyCheckInWanted: rv.earlyCheckInWanted ?? false,
+  earlyCheckInTime: rv.earlyCheckInTime ?? null,
+
+  lateCheckOutWanted: rv.lateCheckOutWanted ?? false,
+  lateCheckOutFrom: rv.lateCheckOutFrom ?? null,
+  lateCheckOutTo: rv.lateCheckOutTo ?? null,
+
               adults: rv.adults ?? rv.paxAdults ?? null,
               childrenCount: rv.childrenCount ?? rv.paxChildren ?? 0,
               childrenAges: rv.childrenAges ?? [],
@@ -869,6 +954,55 @@ export default function GuestBookingsPage() {
 
             checkIn,
             checkOut,
+              // ✅ saat / erken-geç / aynı gün: booking yoksa requestSnapshot/requestDoc’tan
+  checkInTime:
+    b.checkInTime ??
+    (req as any)?.checkInTime ??
+    (b.requestSnapshot as any)?.checkInTime ??
+    null,
+
+  checkOutTime:
+    b.checkOutTime ??
+    (req as any)?.checkOutTime ??
+    (b.requestSnapshot as any)?.checkOutTime ??
+    null,
+
+  sameDayStay:
+    b.sameDayStay ??
+    (req as any)?.sameDayStay ??
+    (b.requestSnapshot as any)?.sameDayStay ??
+    false,
+
+  earlyCheckInWanted:
+    b.earlyCheckInWanted ??
+    (req as any)?.earlyCheckInWanted ??
+    (b.requestSnapshot as any)?.earlyCheckInWanted ??
+    false,
+
+  earlyCheckInTime:
+    b.earlyCheckInTime ??
+    (req as any)?.earlyCheckInTime ??
+    (b.requestSnapshot as any)?.earlyCheckInTime ??
+    null,
+
+  lateCheckOutWanted:
+    b.lateCheckOutWanted ??
+    (req as any)?.lateCheckOutWanted ??
+    (b.requestSnapshot as any)?.lateCheckOutWanted ??
+    false,
+
+  lateCheckOutFrom:
+    b.lateCheckOutFrom ??
+    (req as any)?.lateCheckOutFrom ??
+    (b.requestSnapshot as any)?.lateCheckOutFrom ??
+    null,
+
+  lateCheckOutTo:
+    b.lateCheckOutTo ??
+    (req as any)?.lateCheckOutTo ??
+    (b.requestSnapshot as any)?.lateCheckOutTo ??
+    null,
+
             nights,
             roomBreakdown,
 
@@ -1068,10 +1202,32 @@ export default function GuestBookingsPage() {
     if (!profile || !messageBooking) return;
 
     const text = messageText.trim();
+    
     if (!text) {
       setMessageError("Lütfen bir mesaj yaz.");
       return;
     }
+// ✅ otomatik talep özeti (aynı gün / saat / erken / geç)
+const autoNote = buildAutoTimeNote(messageBooking as any);
+
+// Misafir aynı şeyi tekrar tekrar göndermesin diye:
+// Eğer kullanıcı mesajında zaten "check-in" / "erken" / "geç çıkış" geçiyorsa eklemiyoruz.
+const lower = text.toLowerCase();
+const alreadyMentions =
+  lower.includes("check-in") ||
+  lower.includes("check in") ||
+  lower.includes("check-out") ||
+  lower.includes("check out") ||
+  lower.includes("erken") ||
+  lower.includes("geç") ||
+  lower.includes("ayni gun") ||
+  lower.includes("aynı gün");
+
+const finalText =
+  autoNote && !alreadyMentions
+    ? `${autoNote}\n\n💬 Mesajım:\n${text}`
+    : text;
+
 
     try {
       setMessageSending(true);
@@ -1086,10 +1242,14 @@ export default function GuestBookingsPage() {
         agencyId: pkg ? (messageBooking.bookingRaw?.agencyId ?? messageBooking.offerSnapshot?.agencyId ?? messageBooking.agencySnapshot?.id ?? null) : null,
         guestId: profile.uid,
         senderRole: "guest",
-        text,
+       text: finalText,
+
         createdAt: serverTimestamp(),
         read: false
       });
+<p className="text-[0.7rem] text-slate-500">
+  Not: Mesajın içinde saat/erken/geç bilgisi yoksa sistem otomatik olarak “Talep özeti” ekler.
+</p>
 
       setMessageSuccess("Mesajın gönderildi.");
       setMessageText("");
@@ -1466,6 +1626,34 @@ export default function GuestBookingsPage() {
                       <p className="text-[0.9rem] font-semibold">
                         {b.checkIn} – {b.checkOut} <span className="text-slate-400 text-[0.75rem]">• {nights} gece</span>
                       </p>
+                      <div className="flex flex-wrap gap-2 mt-1">
+  <span className="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/60 px-2 py-0.5 text-[0.65rem] text-slate-200">
+    Check-in: {safeStr(b.checkInTime, "—")}
+  </span>
+
+  <span className="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/60 px-2 py-0.5 text-[0.65rem] text-slate-200">
+    Check-out: {safeStr(b.checkOutTime, "12:00")}
+  </span>
+
+  {b.sameDayStay && (
+    <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[0.65rem] text-amber-200">
+      Aynı gün
+    </span>
+  )}
+
+  {b.earlyCheckInWanted && (
+    <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
+      Erken giriş: {safeStr(b.earlyCheckInTime, "—")}
+    </span>
+  )}
+
+  {b.lateCheckOutWanted && (
+    <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
+      Geç çıkış: {safeStr(b.lateCheckOutFrom, "—")} - {safeStr(b.lateCheckOutTo, "—")}
+    </span>
+  )}
+</div>
+
                       <p className="text-[0.75rem] text-slate-300">
                         {safeNum(b.adults, 0) + safeNum(b.childrenCount, 0)} kişi • {safeStr(b.roomsCount || 1)} oda
                       </p>
@@ -1685,6 +1873,30 @@ function BookingMessageModalGuest({
 
     return () => unsub();
   }, [db, booking.id]);
+function buildAutoTimeNote(b: any) {
+  const parts: string[] = [];
+
+  const checkInTime = safeStr(b?.checkInTime, "");
+  const checkOutTime = safeStr(b?.checkOutTime, "");
+
+  if (checkInTime) parts.push(`Check-in saati: ${checkInTime}`);
+  if (checkOutTime) parts.push(`Check-out saati: ${checkOutTime}`);
+
+  if (b?.sameDayStay) parts.push("Aynı gün konaklama");
+
+  if (b?.earlyCheckInWanted) {
+    parts.push(`Erken giriş istiyoruz: ${safeStr(b?.earlyCheckInTime, "—")}`);
+  }
+
+  if (b?.lateCheckOutWanted) {
+    parts.push(`Geç çıkış istiyoruz: ${safeStr(b?.lateCheckOutFrom, "—")} - ${safeStr(b?.lateCheckOutTo, "—")}`);
+  }
+
+  // hiçbir şey yoksa boş dön
+  if (!parts.length) return "";
+
+  return `⏱️ Talep özeti:\n- ${parts.join("\n- ")}`;
+}
 
   const messagingClosed = !canMessageBooking(booking);
   const pkg = isPackageBooking(booking);
@@ -1699,6 +1911,34 @@ function BookingMessageModalGuest({
             <p className="text-[0.78rem] text-slate-400">
               {pkg ? `Paket: ${pkgTitle(booking)}` : safeStr(booking.hotelName)} • {booking.checkIn} – {booking.checkOut}
             </p>
+            <div className="flex flex-wrap gap-2 mt-2">
+  <span className="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/60 px-2 py-0.5 text-[0.65rem] text-slate-200">
+    Check-in: {safeStr((booking as any).checkInTime, "—")}
+  </span>
+
+  <span className="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/60 px-2 py-0.5 text-[0.65rem] text-slate-200">
+    Check-out: {safeStr((booking as any).checkOutTime, "12:00")}
+  </span>
+
+  {!!(booking as any).sameDayStay && (
+    <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[0.65rem] text-amber-200">
+      Aynı gün
+    </span>
+  )}
+
+  {!!(booking as any).earlyCheckInWanted && (
+    <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
+      Erken giriş: {safeStr((booking as any).earlyCheckInTime, "—")}
+    </span>
+  )}
+
+  {!!(booking as any).lateCheckOutWanted && (
+    <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
+      Geç çıkış: {safeStr((booking as any).lateCheckOutFrom, "—")} - {safeStr((booking as any).lateCheckOutTo, "—")}
+    </span>
+  )}
+</div>
+
           </div>
           <button onClick={onClose} className="text-[0.85rem] text-slate-400 hover:text-slate-200">
             ✕ Kapat
@@ -1738,7 +1978,13 @@ function BookingMessageModalGuest({
               onChange={(e) => setMessageText(e.target.value)}
               disabled={messagingClosed}
               className="w-full rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm resize-none disabled:opacity-60 outline-none focus:border-emerald-400"
-              placeholder={pkg ? "Örn: Programda değişiklik mümkün mü?" : "Örn: Geç giriş yapacağız, mümkün mü?"}
+placeholder={
+  pkg
+    ? "Örn: Programda değişiklik mümkün mü?"
+    : ((booking as any).lateCheckOutWanted || (booking as any).earlyCheckInWanted)
+      ? "Örn: Erken giriş / geç çıkış talebimizi teyit edebilir misiniz?"
+      : "Örn: Geç giriş yapacağız, mümkün mü?"
+}
             />
           </div>
 
@@ -1901,6 +2147,7 @@ function RoomTypeModal({
             ))}
           </div>
         ) : (
+          
           <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-slate-400 text-sm">Bu oda için görsel bulunamadı.</div>
         )}
 
@@ -1911,6 +2158,14 @@ function RoomTypeModal({
             <MiniField label="Boyut" value={String(size)} />
             <MiniField label="Yatak" value={String(bed)} />
           </div>
+{((booking as any).earlyCheckInWanted || (booking as any).lateCheckOutWanted || (booking as any).sameDayStay) && (
+  <div className="rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 text-[0.75rem] text-slate-300">
+    ⏱️ Talep notu:{" "}
+    {(booking as any).sameDayStay ? "Aynı gün • " : ""}
+    {(booking as any).earlyCheckInWanted ? `Erken giriş: ${safeStr((booking as any).earlyCheckInTime, "—")} • ` : ""}
+    {(booking as any).lateCheckOutWanted ? `Geç çıkış: ${safeStr((booking as any).lateCheckOutFrom, "—")} - ${safeStr((booking as any).lateCheckOutTo, "—")}` : ""}
+  </div>
+)}
 
           <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
             <p className="text-[0.72rem] text-slate-400">Açıklama</p>
@@ -1941,6 +2196,14 @@ function buildGuestShareText(booking: Booking, guestProfile: any, mapsUrl?: stri
   if (mapsUrl) lines.push(`🗺️ Harita: ${mapsUrl}`);
   lines.push("");
   lines.push(`🗓️ Tarih: ${safeStr(booking.checkIn)} → ${safeStr(booking.checkOut)} (${nights} gece)`);
+  lines.push(`🕒 Check-in saati: ${safeStr(booking.checkInTime, "—")}`);
+lines.push(`🕛 Check-out saati: ${safeStr(booking.checkOutTime, "12:00")}`);
+
+if (booking.sameDayStay) lines.push("⚡ Aynı gün konaklama");
+if (booking.earlyCheckInWanted) lines.push(`🌅 Erken giriş: ${safeStr(booking.earlyCheckInTime, "—")}`);
+if (booking.lateCheckOutWanted) lines.push(`🌙 Geç çıkış: ${safeStr(booking.lateCheckOutFrom, "—")} - ${safeStr(booking.lateCheckOutTo, "—")}`);
+lines.push("");
+
   lines.push(`👥 Kişi: ${totalGuests} • Oda: ${safeStr(booking.roomsCount || 1)}`);
   if (Array.isArray(booking.childrenAges) && booking.childrenAges.length) lines.push(`🧒 Çocuk yaşları: ${booking.childrenAges.join(", ")}`);
   lines.push("");
@@ -1979,6 +2242,13 @@ function buildVoucherText(booking: Booking, guestProfile: any, mapsUrl?: string 
 
   lines.push("");
   lines.push(`Tarih: ${safeStr(booking.checkIn)} – ${safeStr(booking.checkOut)} (${nights} gece)`);
+  lines.push(`Check-in saati: ${safeStr(booking.checkInTime, "—")}`);
+lines.push(`Check-out saati: ${safeStr(booking.checkOutTime, "12:00")}`);
+if (booking.sameDayStay) lines.push("Aynı gün konaklama: Evet");
+if (booking.earlyCheckInWanted) lines.push(`Erken giriş: ${safeStr(booking.earlyCheckInTime, "—")}`);
+if (booking.lateCheckOutWanted) lines.push(`Geç çıkış: ${safeStr(booking.lateCheckOutFrom, "—")} - ${safeStr(booking.lateCheckOutTo, "—")}`);
+lines.push("");
+
   lines.push(`Kişi/Oda: ${safeStr(booking.adults, "0")} yetişkin • ${safeStr(booking.childrenCount, "0")} çocuk • ${safeStr(booking.roomsCount, "1")} oda`);
   if (Array.isArray(booking.childrenAges) && booking.childrenAges.length) lines.push(`Çocuk yaşları: ${booking.childrenAges.join(", ")}`);
 
@@ -2115,6 +2385,17 @@ function handlePrintVoucher(booking: Booking, guestProfile: any, mapsUrl?: strin
           <div class="card">
             <p class="label">Misafir</p>
             <p class="val">${escapeHtml(guestName)}</p>
+            <p class="muted">Check-in: ${escapeHtml(safeStr(booking.checkInTime,"—"))} • Check-out: ${escapeHtml(safeStr(booking.checkOutTime,"12:00"))}</p>
+${
+  booking.sameDayStay || booking.earlyCheckInWanted || booking.lateCheckOutWanted
+    ? `<p class="muted">
+        ${booking.sameDayStay ? "Aynı gün • " : ""}
+        ${booking.earlyCheckInWanted ? `Erken giriş: ${escapeHtml(safeStr(booking.earlyCheckInTime,"—"))} • ` : ""}
+        ${booking.lateCheckOutWanted ? `Geç çıkış: ${escapeHtml(safeStr(booking.lateCheckOutFrom,"—"))} - ${escapeHtml(safeStr(booking.lateCheckOutTo,"—"))}` : ""}
+      </p>`
+    : ""
+}
+
             <p class="muted">${escapeHtml(guestEmail)}</p>
             <div class="line"></div>
             <p class="label">Tarih</p>
@@ -2489,7 +2770,16 @@ const summary: Record<string, any> = {
         </div>
 
         <div className="grid gap-3 md:grid-cols-3">
-          <InfoCard title="Konaklama" lines={[`${safeStr(booking.checkIn)} → ${safeStr(booking.checkOut)}`, `${nights} gece`]} />
+<InfoCard
+  title="Konaklama"
+  lines={[
+    `${safeStr(booking.checkIn)} (${safeStr(booking.checkInTime,"—")}) → ${safeStr(booking.checkOut)} (${safeStr(booking.checkOutTime,"12:00")})`,
+    `${nights} gece`,
+    booking.sameDayStay ? "⚡ Aynı gün" : "",
+    booking.earlyCheckInWanted ? `🌅 Erken giriş: ${safeStr(booking.earlyCheckInTime,"—")}` : "",
+    booking.lateCheckOutWanted ? `🌙 Geç çıkış: ${safeStr(booking.lateCheckOutFrom,"—")} - ${safeStr(booking.lateCheckOutTo,"—")}` : ""
+  ].filter(Boolean)}
+/>
           <InfoCard title="Kişi / Oda" lines={[`${safeStr(booking.adults, "0")} yetişkin • ${safeStr(booking.childrenCount, "0")} çocuk`, `Oda: ${safeStr(booking.roomsCount || 1)}`]} />
           <InfoCard title="Misafir" lines={[safeStr(guestProfile?.displayName || booking.guestName), guestProfile?.email ? `E-posta: ${guestProfile.email}` : ""].filter(Boolean)} />
         </div>

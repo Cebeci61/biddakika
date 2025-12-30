@@ -52,6 +52,15 @@ await logActivity({
     paymentStatus: bookingData.paymentStatus || "",
     checkIn: bookingData.checkIn || "",
     checkOut: bookingData.checkOut || "",
+    checkInTime: bookingData.checkInTime || "",
+checkOutTime: bookingData.checkOutTime || "",
+sameDayStay: !!bookingData.sameDayStay,
+earlyCheckInWanted: !!bookingData.earlyCheckInWanted,
+earlyCheckInTime: bookingData.earlyCheckInTime || "",
+lateCheckOutWanted: !!bookingData.lateCheckOutWanted,
+lateCheckOutFrom: bookingData.lateCheckOutFrom || "",
+lateCheckOutTo: bookingData.lateCheckOutTo || "",
+
   },
 });
 
@@ -132,6 +141,19 @@ interface RequestSummary {
   district?: string | null;
   checkIn: string;
   checkOut: string;
+    // ✅ saat / erken-geç / aynı gün
+  checkInTime?: string | null;
+  checkOutTime?: string | null;
+
+  sameDayStay?: boolean | null;
+
+  earlyCheckInWanted?: boolean | null;
+  earlyCheckInTime?: string | null;
+
+  lateCheckOutWanted?: boolean | null;
+  lateCheckOutFrom?: string | null;
+  lateCheckOutTo?: string | null;
+
   adults: number;
   childrenCount?: number;
   roomsCount?: number;
@@ -157,6 +179,7 @@ interface RequestSummary {
   desiredStarRatings?: number[] | null;
   generalNote?: string | null;
   nearMe?: boolean | null;
+
 }
 
 interface RoomTypeProfile {
@@ -789,6 +812,19 @@ async function createBooking(finalPaymentMethod: PaymentMethod) {
       district: req?.district ?? null,
       checkIn: req?.checkIn ?? null,
       checkOut: req?.checkOut ?? null,
+      // ✅ saatler + erken/geç + aynı gün (booking’e de düşsün)
+checkInTime: (req as any)?.checkInTime ?? null,
+checkOutTime: (req as any)?.checkOutTime ?? null,
+
+sameDayStay: (req as any)?.sameDayStay ?? false,
+
+earlyCheckInWanted: (req as any)?.earlyCheckInWanted ?? false,
+earlyCheckInTime: (req as any)?.earlyCheckInTime ?? null,
+
+lateCheckOutWanted: (req as any)?.lateCheckOutWanted ?? false,
+lateCheckOutFrom: (req as any)?.lateCheckOutFrom ?? null,
+lateCheckOutTo: (req as any)?.lateCheckOutTo ?? null,
+
       adults: req?.adults ?? null,
       childrenCount: req?.childrenCount ?? null,
       childrenAges: (req as any)?.childrenAges ?? null,
@@ -1120,6 +1156,19 @@ async function handleReject(offer: GuestOffer) {
               district: v.district ?? null,
               checkIn: v.checkIn,
               checkOut: v.checkOut,
+                  // ✅ saatler + erken/geç + aynı gün
+    checkInTime: v.checkInTime ?? null,
+    checkOutTime: v.checkOutTime ?? null,
+
+    sameDayStay: v.sameDayStay ?? false,
+
+    earlyCheckInWanted: v.earlyCheckInWanted ?? false,
+    earlyCheckInTime: v.earlyCheckInTime ?? null,
+
+    lateCheckOutWanted: v.lateCheckOutWanted ?? false,
+    lateCheckOutFrom: v.lateCheckOutFrom ?? null,
+    lateCheckOutTo: v.lateCheckOutTo ?? null,
+
               adults: v.adults,
               childrenCount: v.childrenCount ?? 0,
               childrenAges: Array.isArray(v.childrenAges) ? v.childrenAges : [],
@@ -1839,6 +1888,34 @@ hiddenAt: v.hiddenAt ?? null,
                           <p className="text-slate-100 text-sm font-semibold">
                             {req.city}{req.district ? ` / ${req.district}` : ""} • {req.checkIn} – {req.checkOut}
                           </p>
+                          <div className="flex flex-wrap gap-2 mt-1">
+  <span className="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/60 px-2 py-0.5 text-[0.65rem] text-slate-200">
+    Check-in: {safeStr((req as any).checkInTime, "—")}
+  </span>
+
+  <span className="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/60 px-2 py-0.5 text-[0.65rem] text-slate-200">
+    Check-out: {safeStr((req as any).checkOutTime, "12:00")}
+  </span>
+
+  {(req as any).sameDayStay && (
+    <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[0.65rem] text-amber-200">
+      Aynı gün
+    </span>
+  )}
+
+  {(req as any).earlyCheckInWanted && (
+    <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
+      Erken giriş: {safeStr((req as any).earlyCheckInTime, "—")}
+    </span>
+  )}
+
+  {(req as any).lateCheckOutWanted && (
+    <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
+      Geç çıkış: {safeStr((req as any).lateCheckOutFrom, "—")} - {safeStr((req as any).lateCheckOutTo, "—")}
+    </span>
+  )}
+</div>
+
                           {isGroup && (
                             <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[0.65rem] text-amber-200">
                               Grup talebi
@@ -3011,9 +3088,34 @@ function OfferDetailModal({
                 <p className="text-slate-100 font-semibold mt-1">{safeStr(reqCity)}{reqDistrict ? ` / ${reqDistrict}` : ""}</p>
               </div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                <p className="text-[0.72rem] text-slate-400">Tarih</p>
-                <p className="text-slate-100 font-semibold mt-1">{safeStr(checkIn)} → {safeStr(checkOut)} ({nights} gece)</p>
-              </div>
+  <p className="text-[0.72rem] text-slate-400">Tarih</p>
+
+  <p className="text-slate-100 font-semibold mt-1">
+    {safeStr(checkIn)} ({safeStr(reqAny.checkInTime, "—")}) → {safeStr(checkOut)} ({safeStr(reqAny.checkOutTime, "12:00")})
+    {" "}({nights} gece)
+  </p>
+
+  <div className="flex flex-wrap gap-2 mt-2">
+    {reqAny.sameDayStay && (
+      <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[0.65rem] text-amber-200">
+        Aynı gün
+      </span>
+    )}
+
+    {reqAny.earlyCheckInWanted && (
+      <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
+        Erken giriş: {safeStr(reqAny.earlyCheckInTime, "—")}
+      </span>
+    )}
+
+    {reqAny.lateCheckOutWanted && (
+      <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
+        Geç çıkış: {safeStr(reqAny.lateCheckOutFrom, "—")} - {safeStr(reqAny.lateCheckOutTo, "—")}
+      </span>
+    )}
+  </div>
+</div>
+
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                 <p className="text-[0.72rem] text-slate-400">Kişi / Oda</p>
                 <p className="text-slate-100 font-semibold mt-1">{adults} yetişkin • {children} çocuk • {roomsCount} oda</p>
