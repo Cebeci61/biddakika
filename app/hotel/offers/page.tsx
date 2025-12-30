@@ -61,6 +61,22 @@ interface RequestItem {
 
   // full fetch için serbest
   [k: string]: any;
+    // ✅ yeni saat alanları
+  checkInTime?: string | null;         // "23:58"
+  checkOutTime?: string | null;        // "12:00"
+  sameDayStay?: boolean;               // true/false
+
+  earlyCheckInWanted?: boolean;        // true/false
+  earlyCheckInTime?: string | null;    // "03:00"
+
+  lateCheckOutWanted?: boolean;        // true/false
+  lateCheckOutFrom?: string | null;    // "12:00"
+  lateCheckOutTo?: string | null;      // "16:00"
+
+  // (opsiyonel) date-time alanların varsa
+  checkInDateTime?: any;               // "2025-12-29T20:58:00.000Z" veya Timestamp
+  checkOutDateTime?: any;              // "2025-12-30T09:00:00.000Z" veya Timestamp
+
 }
 
 interface HotelOffer {
@@ -395,6 +411,23 @@ export default function HotelOffersPage() {
             boardTypes: Array.isArray(v.boardTypes) ? v.boardTypes : [],
             desiredStarRatings: Array.isArray(v.desiredStarRatings) ? v.desiredStarRatings : [],
             featureKeys: Array.isArray(v.featureKeys) ? v.featureKeys : [],
+                        // ✅ saat & aynı gün
+            checkInTime: v.checkInTime ?? null,
+            checkOutTime: v.checkOutTime ?? "12:00",
+            sameDayStay: !!v.sameDayStay,
+
+            // ✅ erken giriş / geç çıkış
+            earlyCheckInWanted: !!v.earlyCheckInWanted,
+            earlyCheckInTime: v.earlyCheckInTime ?? null,
+
+            lateCheckOutWanted: !!v.lateCheckOutWanted,
+            lateCheckOutFrom: v.lateCheckOutFrom ?? null,
+            lateCheckOutTo: v.lateCheckOutTo ?? null,
+
+            // ✅ (opsiyonel) datetime varsa
+            checkInDateTime: v.checkInDateTime ?? null,
+            checkOutDateTime: v.checkOutDateTime ?? null,
+
             notes: v.notes ?? v.note ?? null,
             ...v
           };
@@ -620,11 +653,46 @@ export default function HotelOffersPage() {
                         {nights > 0 ? ` • ${nights} gece` : ""}
                       </p>
 
+<div className="flex flex-wrap gap-2 mt-1">
+  {r.earlyCheckInWanted && (
+    <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
+      Erken giriş: {safeStr(r.earlyCheckInTime, "—")}
+    </span>
+  )}
+
+  {r.lateCheckOutWanted && (
+    <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
+      Geç çıkış: {safeStr(r.lateCheckOutFrom, "—")} - {safeStr(r.lateCheckOutTo, "—")}
+    </span>
+  )}
+
+  {r.sameDayStay && (
+    <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[0.65rem] text-amber-200">
+      Aynı gün
+    </span>
+  )}
+</div>
+
                       {r.notes ? <p className="text-[0.7rem] text-slate-400 mt-1 line-clamp-2">“{String(r.notes)}”</p> : null}
                     </div>
 
                     <div className="text-slate-100">
-                      <p className="font-semibold">{safeStr(r.checkIn)} → {safeStr(r.checkOut)}</p>
+<p className="font-semibold">
+  {safeStr(r.checkIn)}
+  <span className="text-slate-400 font-normal"> ({safeStr(r.checkInTime, "—")})</span>
+  {" "}→{" "}
+  {safeStr(r.checkOut)}
+  <span className="text-slate-400 font-normal"> ({safeStr(r.checkOutTime, "12:00")})</span>
+</p>
+
+<p className="text-[0.7rem] text-slate-400">
+  {r.sameDayStay ? (
+    <span className="text-amber-200 font-semibold">Aynı gün konaklama</span>
+  ) : (
+    <span>{nights > 0 ? `${nights} gece` : "—"}</span>
+  )}
+  {" "}• Oluşturma: {fmtDateTimeTR(r.createdAt)}
+</p>
                       <p className="text-[0.7rem] text-slate-400">Oluşturma: {fmtDateTimeTR(r.createdAt)}</p>
                     </div>
 
@@ -1391,6 +1459,24 @@ function OfferDetailsModal({
                 {safeStr(reqAny.city)}{reqAny.district ? ` / ${reqAny.district}` : ""} • {safeStr(reqAny.checkIn)} → {safeStr(reqAny.checkOut)} •{" "}
                 {nights} gece • Süre: <span className={left === "Süre doldu" ? "text-red-300" : "text-emerald-300"}>{left || "—"}</span>
               </p>
+<p className="text-[0.7rem] text-slate-500">
+  Check-in saati: <span className="text-slate-200 font-semibold">{safeStr(reqAny.checkInTime, "—")}</span>{" "}
+  • Check-out saati: <span className="text-slate-200 font-semibold">{safeStr(reqAny.checkOutTime, "12:00")}</span>{" "}
+  {reqAny.sameDayStay ? <span className="text-amber-200 font-semibold">• Aynı gün</span> : null}
+</p>
+
+{reqAny.earlyCheckInWanted ? (
+  <p className="text-[0.7rem] text-slate-500">
+    Erken giriş isteği: <span className="text-sky-200 font-semibold">{safeStr(reqAny.earlyCheckInTime, "—")}</span>
+  </p>
+) : null}
+
+{reqAny.lateCheckOutWanted ? (
+  <p className="text-[0.7rem] text-slate-500">
+    Geç çıkış isteği:{" "}
+    <span className="text-sky-200 font-semibold">{safeStr(reqAny.lateCheckOutFrom, "—")} - {safeStr(reqAny.lateCheckOutTo, "—")}</span>
+  </p>
+) : null}
 
               <p className="text-[0.7rem] text-slate-500">
                 Gönderim: <span className="text-slate-200">{fmtDateTimeTR(offerAny.createdAt)}</span>

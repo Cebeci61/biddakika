@@ -126,6 +126,18 @@ interface Booking {
   contactCompany?: string | null;
   contactNote?: string | null;
   requestNote?: string | null;
+  // saatler (yeni)
+  checkInTime?: string | null;
+  checkOutTime?: string | null;
+
+  sameDayStay?: boolean | null;
+
+  earlyCheckInWanted?: boolean | null;
+  earlyCheckInTime?: string | null;
+
+  lateCheckOutWanted?: boolean | null;
+  lateCheckOutFrom?: string | null;
+  lateCheckOutTo?: string | null;
 
   createdAt?: Timestamp;
 }
@@ -170,6 +182,19 @@ interface RequestDoc {
 
   extraFeaturesText?: string | null;
   hotelFeatureNote?: string | null;
+    // saatler (yeni)
+  checkInTime?: string | null;
+  checkOutTime?: string | null;
+
+  sameDayStay?: boolean | null;
+
+  earlyCheckInWanted?: boolean | null;
+  earlyCheckInTime?: string | null;
+
+  lateCheckOutWanted?: boolean | null;
+  lateCheckOutFrom?: string | null;
+  lateCheckOutTo?: string | null;
+
 
   note?: string | null;
 
@@ -378,6 +403,18 @@ function mergeAll(b: Booking, req?: RequestDoc | null, offer?: OfferDoc | null):
 
     merged.checkIn = merged.checkIn || req.checkIn || "";
     merged.checkOut = merged.checkOut || req.checkOut || "";
+// ✅ saatler + erken/geç + aynı gün
+merged.checkInTime = merged.checkInTime ?? (req as any).checkInTime ?? null;
+merged.checkOutTime = merged.checkOutTime ?? (req as any).checkOutTime ?? null;
+
+merged.sameDayStay = merged.sameDayStay ?? (req as any).sameDayStay ?? null;
+
+merged.earlyCheckInWanted = merged.earlyCheckInWanted ?? (req as any).earlyCheckInWanted ?? null;
+merged.earlyCheckInTime = merged.earlyCheckInTime ?? (req as any).earlyCheckInTime ?? null;
+
+merged.lateCheckOutWanted = merged.lateCheckOutWanted ?? (req as any).lateCheckOutWanted ?? null;
+merged.lateCheckOutFrom = merged.lateCheckOutFrom ?? (req as any).lateCheckOutFrom ?? null;
+merged.lateCheckOutTo = merged.lateCheckOutTo ?? (req as any).lateCheckOutTo ?? null;
 
     merged.adults = merged.adults ?? req.adults ?? null;
     merged.childrenCount = merged.childrenCount ?? req.childrenCount ?? null;
@@ -565,6 +602,18 @@ export default function HotelBookingsPage() {
             contactCompany: v.contactCompany ?? null,
             contactNote: v.contactNote ?? null,
             requestNote: v.requestNote ?? null,
+    // ✅ saatler + erken/geç + aynı gün (booking doc’ta varsa)
+    checkInTime: v.checkInTime ?? null,
+    checkOutTime: v.checkOutTime ?? null,
+
+    sameDayStay: v.sameDayStay ?? null,
+
+    earlyCheckInWanted: v.earlyCheckInWanted ?? null,
+    earlyCheckInTime: v.earlyCheckInTime ?? null,
+
+    lateCheckOutWanted: v.lateCheckOutWanted ?? null,
+    lateCheckOutFrom: v.lateCheckOutFrom ?? null,
+    lateCheckOutTo: v.lateCheckOutTo ?? null,
 
             createdAt: v.createdAt
           };
@@ -590,6 +639,18 @@ export default function HotelBookingsPage() {
 
                     checkIn: v.checkIn,
                     checkOut: v.checkOut,
+  // ✅ saatler + erken/geç + aynı gün (request doc’tan)
+  checkInTime: v.checkInTime ?? null,
+  checkOutTime: v.checkOutTime ?? null,
+
+  sameDayStay: v.sameDayStay ?? null,
+
+  earlyCheckInWanted: v.earlyCheckInWanted ?? null,
+  earlyCheckInTime: v.earlyCheckInTime ?? null,
+
+  lateCheckOutWanted: v.lateCheckOutWanted ?? null,
+  lateCheckOutFrom: v.lateCheckOutFrom ?? null,
+  lateCheckOutTo: v.lateCheckOutTo ?? null,
 
                     adults: v.adults,
                     childrenCount: v.childrenCount ?? 0,
@@ -1113,6 +1174,33 @@ export default function HotelBookingsPage() {
                       <div className="text-[0.85rem] font-semibold">
                         {b.checkIn} – {b.checkOut}
                       </div>
+                      <div className="flex flex-wrap gap-2 mt-1">
+  <span className="inline-flex items-center rounded-full border border-slate-700 bg-slate-900 px-2 py-0.5 text-[0.65rem] text-slate-200">
+    Check-in: {safeStr(b.checkInTime, "—")}
+  </span>
+  <span className="inline-flex items-center rounded-full border border-slate-700 bg-slate-900 px-2 py-0.5 text-[0.65rem] text-slate-200">
+    Check-out: {safeStr(b.checkOutTime, "12:00")}
+  </span>
+
+  {b.sameDayStay && (
+    <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[0.65rem] text-amber-200">
+      Aynı gün
+    </span>
+  )}
+
+  {b.earlyCheckInWanted && (
+    <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
+      Erken giriş: {safeStr(b.earlyCheckInTime, "—")}
+    </span>
+  )}
+
+  {b.lateCheckOutWanted && (
+    <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
+      Geç çıkış: {safeStr(b.lateCheckOutFrom, "—")} - {safeStr(b.lateCheckOutTo, "—")}
+    </span>
+  )}
+</div>
+
                       <div className="text-[0.75rem] text-slate-300">
                         {nights} gece • {(b.adults ?? 0)} yetişkin
                         {b.childrenCount && b.childrenCount > 0 ? ` • ${b.childrenCount} çocuk` : ""} • {b.roomsCount || 1} oda
@@ -1480,7 +1568,13 @@ function BookingVoucherModal({ booking, onClose }: { booking: any; onClose: () =
   voucherLines.push(`Firma/Kurum: ${safeStr(booking.contactCompany)}`);
   voucherLines.push("");
 
-  voucherLines.push(`Konaklama: ${booking.checkIn} - ${booking.checkOut} (${nights} gece)`);
+  voucherLines.push(
+  `Konaklama: ${booking.checkIn} (${safeStr(booking.checkInTime, "—")}) - ${booking.checkOut} (${safeStr(booking.checkOutTime, "12:00")}) (${nights} gece)`
+);
+if (booking.sameDayStay) voucherLines.push("Aynı gün giriş/çıkış: EVET");
+if (booking.earlyCheckInWanted) voucherLines.push(`Erken giriş isteği: ${safeStr(booking.earlyCheckInTime, "—")}`);
+if (booking.lateCheckOutWanted) voucherLines.push(`Geç çıkış isteği: ${safeStr(booking.lateCheckOutFrom, "—")} - ${safeStr(booking.lateCheckOutTo, "—")}`);
+
   voucherLines.push(
     `Kişi/Oda: ${(booking.adults ?? 0)} yetişkin${booking.childrenCount ? " • " + booking.childrenCount + " çocuk" : ""} • ${booking.roomsCount || 1} oda`
   );
@@ -1540,7 +1634,12 @@ function BookingVoucherModal({ booking, onClose }: { booking: any; onClose: () =
 </head>
 <body>
   <h1>Biddakika — Rezervasyon Voucherı</h1>
-  <div class="meta">Booking ID: ${booking.id} • Durum: ${statusText(booking)}</div>
+<div class="meta">
+  Booking ID: ${booking.id} • Durum: ${statusText(booking)}
+  • Check-in: ${booking.checkIn} ${escapeHtml(safeStr(booking.checkInTime, "—"))}
+  • Check-out: ${booking.checkOut} ${escapeHtml(safeStr(booking.checkOutTime, "12:00"))}
+</div>
+
   <div class="box"><pre>${escapeHtml(voucherText)}</pre></div>
   <script>window.print();</script>
 </body>
@@ -1583,9 +1682,28 @@ function BookingVoucherModal({ booking, onClose }: { booking: any; onClose: () =
                 {statusText(booking)}
               </span>
             </div>
-            <p className="text-[0.8rem] text-slate-400">
-              {safeStr(booking.guestName)} • {booking.checkIn} – {booking.checkOut} • {nights} gece
-            </p>
+           <p className="text-[0.78rem] text-slate-400">
+  {safeStr(booking.guestName)} • {booking.checkIn} ({safeStr(booking.checkInTime, "—")}) – {booking.checkOut} ({safeStr(booking.checkOutTime, "12:00")}) • {nights} gece
+</p>
+
+<div className="flex flex-wrap gap-2 mt-2">
+  {booking.sameDayStay && (
+    <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[0.65rem] text-amber-200">
+      Aynı gün
+    </span>
+  )}
+  {booking.earlyCheckInWanted && (
+    <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
+      Erken giriş: {safeStr(booking.earlyCheckInTime, "—")}
+    </span>
+  )}
+  {booking.lateCheckOutWanted && (
+    <span className="inline-flex items-center rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[0.65rem] text-sky-200">
+      Geç çıkış: {safeStr(booking.lateCheckOutFrom, "—")} - {safeStr(booking.lateCheckOutTo, "—")}
+    </span>
+  )}
+</div>
+
           </div>
 
           <div className="flex flex-wrap gap-2 justify-end">
