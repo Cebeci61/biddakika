@@ -1,6 +1,8 @@
 import * as admin from "firebase-admin";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as crypto from "crypto";
+import { getFirebaseAuth } from "@/lib/firebase/client";
+
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -156,5 +158,112 @@ export const claimPublicHotelRequest = onCall(
     });
 
     return { ok: true, requestId: docSnap.id };
+  }
+);
+export const restartGuestRequestAndResetOffers = onCall(
+  {
+    region: "us-central1",
+    cors: true, // ✅ CORS FIX (localhost dahil)
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError("unauthenticated", "Login required");
+    }
+
+    const guestId = request.auth.uid;
+    const requestId = String(request.data?.requestId || "").trim();
+    const nextIn = String(request.data?.checkIn || "").trim();   // opsiyonel
+    const nextOut = String(request.data?.checkOut || "").trim(); // opsiyonel
+
+    if (!requestId) {
+      throw new HttpsError("invalid-argument", "requestId required");
+    }
+
+    // yyyy-mm-dd validate
+    const isISO = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+    const todayISO = () => {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      return d.toISOString().slice(0, 10);
+    };
+    const notPast = (s: string) => {
+      const t = new Date(todayISO()).getTime();
+      const x = new Date(s).setHours(0, 0, 0, 0);
+      return x >= t;
+    };
+
+    if (nextIn) {
+      if (!isISO(nextIn) || !notPast(nextIn)) {
+        throw new HttpsError("invalid-argument", "checkIn must be today or future (YYYY-MM-DD)");
+      }
+    }
+    if (nextOut) {
+      if (!isISO(nextOut)) {
+        throw new HttpsError("invalid-argument", "checkOut must be YYYY-MM-DD");
+      }
+    }
+    if (nextIn && nextOut) {
+      const a = new Date(nextIn).getTime();
+      const b = new Date(nextOut).getTime();
+      if (b < a) {
+        throw new HttpsError("invalid-argument", "checkOut cannot be before checkIn");
+      }
+    }
+
+    const reqRef = db.collection("requests").doc(requestId);
+
+    await db.runTransaction(async (tx) => {
+      const reqSnap = await tx.get(reqRef);
+      if (!reqSnap.exists) {
+        throw new HttpsError("not-found", "request not found");
+      }
+      const req = reqSnap.data() as any;
+
+      const owner = String(req?.guestId || req?.createdById || "");
+      if (owner !== guestId) {
+        throw new HttpsError("permission-denied", "not your request");
+      }
+
+      // 1) request restart
+      const reqPatch: any = {
+        status: "open",
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        restartedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      if (nextIn) reqPatch.checkIn = nextIn;
+      if (nextOut) reqPatch.checkOut = nextOut;
+      if (nextIn && nextOut) reqPatch.sameDayStay = nextIn === nextOut;
+
+      tx.update(reqRef, reqPatch);
+
+      // 2) offers reset (accepted olanları elleme)
+      const offersSnap = await db.collection("offers").where("requestId", "==", requestId).get();
+
+      offersSnap.docs.forEach((offSnap) => {
+        const off = offSnap.data() as any;
+        const curStatus = String(off?.status || "sent");
+        if (curStatus === "accepted") return;
+
+        tx.update(offSnap.ref, {
+          status: "cancelled",
+          cancelledBy: "system_restart",
+          cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
+          guestCounterPrice: null,
+          guestCounterAt: null,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          priceHistory: admin.firestore.FieldValue.arrayUnion({
+            actor: "system",
+            kind: "info",
+            price: Number(off?.totalPrice ?? 0) || 0,
+            currency: String(off?.currency ?? "TRY"),
+            note: "Talep yeniden başlatıldı — eski teklifler sıfırlandı.",
+            createdAt: admin.firestore.Timestamp.now(),
+          }),
+        });
+      });
+    });
+
+    return { ok: true, requestId };
   }
 );
