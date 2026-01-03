@@ -400,6 +400,15 @@ function isCheckInPast(checkIn?: string | null) {
   d.setHours(0, 0, 0, 0);
   return d.getTime() < todayStart().getTime();
 }
+function isFinalOfferStatus(status?: string) {
+  const s = String(status || "").toLowerCase();
+  return (
+    s === "booked" ||
+    s === "paid" ||
+    s === "accepted"
+  );
+}
+
 
 function diffInDays(a: Date, b: Date) {
   const aa = new Date(a); aa.setHours(0,0,0,0);
@@ -484,6 +493,23 @@ function badgeByPkgStatus(status: PackageRequestStatus) {
   if (status === "expired") return "bg-red-500/10 text-red-300 border-red-500/40";
   if (status === "deleted") return "bg-slate-500/10 text-slate-300 border-slate-500/40";
   return "bg-sky-500/10 text-sky-300 border-sky-500/40";
+}
+
+function pickBetterGuestOffer(a?: GuestOffer, b?: GuestOffer) {
+  if (!a) return b!;
+  if (!b) return a;
+
+  const aCancelled = isHotelCancelledStatus(a.status);
+  const bCancelled = isHotelCancelledStatus(b.status);
+
+  // İptal olmayan her zaman üstün
+  if (aCancelled && !bCancelled) return b;
+  if (!aCancelled && bCancelled) return a;
+
+  const aMs = a.updatedAt?.toMillis?.() ?? a.createdAt?.toMillis?.() ?? 0;
+  const bMs = b.updatedAt?.toMillis?.() ?? b.createdAt?.toMillis?.() ?? 0;
+
+  return bMs >= aMs ? b : a;
 }
 
 function guessBestPackageOffer(offers: PackageOffer[]) {
@@ -589,6 +615,9 @@ async function createHotelBooking(params: {
   paymentMethod: PaymentMethod;
 }) {
   const { db, offer, req, hotel, guest, paymentMethod } = params;
+  const pm = String(paymentMethod || "").toLowerCase();
+const offerStatus = pm === "card3d" ? "paid" : "booked";
+
 
   const paymentStatus =
     paymentMethod === "card3d" ? "paid" : paymentMethod === "payAtHotel" ? "payAtHotel" : "pending";
@@ -644,11 +673,42 @@ async function createHotelBooking(params: {
     status: "active"
   });
 
+// if (req?.id) {
+//   await updateDoc(doc(db, "requests", req.id), {
+//     status: "booked",
+//     bookedAt: serverTimestamp(),
+//     bookingId: bookingRef.id
+//   });
+// }
+
+// ✅ Request de kapansın (gelen taleplerden kesin düşsün)
+// 1) Offer kapat (önce bunu dene)
+try {
   await updateDoc(doc(db, "offers", offer.id), {
-    status: "accepted",
-    acceptedAt: serverTimestamp(),
-    bookingId: bookingRef.id
+    status: paymentMethod === "card3d" ? "paid" : "booked",
+    bookedAt: serverTimestamp(),
+    bookingId: bookingRef.id,
+    updatedAt: serverTimestamp(),
+updatedAtMs: Date.now()
   });
+} catch (e) {
+  console.error("OFFERS update failed:", e);
+  // burada throw etme: booking oluştuysa akış bozulmasın
+}
+
+// 2) Request kapat (rules izin vermezse sorun etme)
+try {
+  if (req?.id) {
+    await updateDoc(doc(db, "requests", req.id), {
+      status: "booked",
+      bookedAt: serverTimestamp(),
+      bookingId: bookingRef.id
+    });
+  }
+} catch (e) {
+  console.error("REQUESTS update failed:", e);
+  // burada da throw etme
+}
 
   return bookingRef.id;
 }
@@ -663,6 +723,7 @@ async function createPackageBooking(params: {
   method: PackagePaymentMethod;
 }) {
   const { db, req, offer, agenciesMap, guest, method } = params;
+  
 
   const paymentStatus =
     method === "card3d" ? "paid" : method === "transfer" ? "transfer_pending" : "pay_at_door";
@@ -782,6 +843,7 @@ function RestartDatesModal({
   const [checkOut, setCheckOut] = useState(req?.checkOut || "");
   const [checkInTime, setCheckInTime] = useState(req?.checkInTime || "");
   const [checkOutTime, setCheckOutTime] = useState(req?.checkOutTime || "");
+
 
   useEffect(() => {
     if (!open) return;
@@ -1878,104 +1940,145 @@ export default function GuestOffersPage() {
       setActionError(null);
 
       try {
-        // 1) requests
-        const qReq = query(collection(db, "requests"), where("guestId", "==", profile.uid));
-        const snapReq = await getDocs(qReq);
+   // 1) requests
+const qReq = query(collection(db, "requests"), where("guestId", "==", profile.uid));
+const snapReq = await getDocs(qReq);
 
-        const reqs: RequestSummary[] = snapReq.docs
-          .map((d) => {
-            const v = d.data() as AnyObj;
-            return {
-              id: d.id,
-              raw: { id: d.id, ...v },
+const reqs: RequestSummary[] = snapReq.docs
+  .map((d) => {
+    const v = d.data() as AnyObj;
+    return {
+      id: d.id,
+      raw: { id: d.id, ...v },
+      city: v.city,
+      district: v.district ?? null,
+      checkIn: v.checkIn,
+      checkOut: v.checkOut,
+      checkInTime: v.checkInTime ?? null,
+      checkOutTime: v.checkOutTime ?? null,
+      sameDayStay: v.sameDayStay ?? false,
+      earlyCheckInWanted: v.earlyCheckInWanted ?? false,
+      earlyCheckInTime: v.earlyCheckInTime ?? null,
+      lateCheckOutWanted: v.lateCheckOutWanted ?? false,
+      lateCheckOutFrom: v.lateCheckOutFrom ?? null,
+      lateCheckOutTo: v.lateCheckOutTo ?? null,
+      adults: v.adults ?? 0,
+      childrenCount: v.childrenCount ?? 0,
+      childrenAges: Array.isArray(v.childrenAges) ? v.childrenAges : [],
+      roomsCount: v.roomsCount ?? 1,
+      roomTypes: v.roomTypes ?? [],
+      responseDeadlineMinutes: v.responseDeadlineMinutes ?? 60,
+      createdAt: v.createdAt,
+      status: v.status ?? "open",
+      restartAt: v.restartAt ?? null,
+      type: v.type ?? null,
+      isGroup: v.isGroup ?? false,
+      hotelType: v.hotelType ?? v.accommodationType ?? null,
+      mealPlan: v.mealPlan ?? v.boardType ?? null,
+      starRatingPref: v.starRatingPref ?? v.starRating ?? null,
+      boardTypes: v.boardTypes ?? [],
+      boardTypeNote: v.boardTypeNote ?? null,
+      hotelFeaturePrefs: v.hotelFeaturePrefs ?? [],
+      hotelFeatureNote: v.hotelFeatureNote ?? null,
+      desiredStarRatings: v.desiredStarRatings ?? null,
+      generalNote: v.generalNote ?? v.note ?? null,
+      nearMe: v.nearMe ?? null
+    };
+  })
+  .filter((r) => r.status !== "deleted");
 
-              city: v.city,
-              district: v.district ?? null,
+// requests çekildi -> reqs oluştu
 
-              checkIn: v.checkIn,
-              checkOut: v.checkOut,
+// 🔒 Booking olmuş request’leri bul (tek doğru kaynak: bookings)
+const bookedReqIds = new Set<string>();
 
-              checkInTime: v.checkInTime ?? null,
-              checkOutTime: v.checkOutTime ?? null,
+try {
+  const snapBk = await getDocs(
+    query(collection(db, "bookings"), where("guestId", "==", profile.uid))
+  );
 
-              sameDayStay: v.sameDayStay ?? false,
+  snapBk.docs.forEach((d) => {
+    const v = d.data() as any;
+    const st = String(v.status || "active").toLowerCase();
+    if (st === "cancelled" || st === "deleted") return;
+    if (v.requestId) bookedReqIds.add(String(v.requestId));
+  });
+} catch (e) {
+  console.warn("bookings read failed (ignored):", e);
+}
 
-              earlyCheckInWanted: v.earlyCheckInWanted ?? false,
-              earlyCheckInTime: v.earlyCheckInTime ?? null,
 
-              lateCheckOutWanted: v.lateCheckOutWanted ?? false,
-              lateCheckOutFrom: v.lateCheckOutFrom ?? null,
-              lateCheckOutTo: v.lateCheckOutTo ?? null,
+const reqsVisible = reqs.filter((r) => !bookedReqIds.has(r.id));
 
-              adults: v.adults ?? 0,
-              childrenCount: v.childrenCount ?? 0,
-              childrenAges: Array.isArray(v.childrenAges) ? v.childrenAges : [],
+const reqMap: Record<string, RequestSummary> = {};
+reqsVisible.forEach((r) => (reqMap[r.id] = r));
 
-              roomsCount: v.roomsCount ?? 1,
-              roomTypes: v.roomTypes ?? [],
+const requestIds = reqsVisible.map((r) => r.id);
 
-              responseDeadlineMinutes: v.responseDeadlineMinutes ?? 60,
-              createdAt: v.createdAt,
-              status: v.status ?? "open",
+// sonra offers -> requestIds ile çek
 
-              restartAt: v.restartAt ?? null,
 
-              type: v.type ?? null,
-              isGroup: v.isGroup ?? false,
 
-              hotelType: v.hotelType ?? v.accommodationType ?? null,
-              mealPlan: v.mealPlan ?? v.boardType ?? null,
-              starRatingPref: v.starRatingPref ?? v.starRating ?? null,
+try {
+  const snapBk = await getDocs(query(collection(db, "bookings"), where("guestId", "==", profile.uid)));
+  snapBk.docs.forEach((d) => {
+    const v = d.data() as any;
+    const st = String(v?.status || "active").toLowerCase();
+    if (st === "cancelled" || st === "deleted") return;
+    if (v?.requestId) bookedReqIds.add(String(v.requestId));
+  });
+} catch (e) {
+  console.warn("bookings read failed (ignored):", e);
+}
 
-              boardTypes: v.boardTypes ?? [],
-              boardTypeNote: v.boardTypeNote ?? null,
 
-              hotelFeaturePrefs: v.hotelFeaturePrefs ?? [],
-              hotelFeatureNote: v.hotelFeatureNote ?? null,
+   // 2) offers
+const offersOut: GuestOffer[] = [];
+for (const part of chunkArray(requestIds, 10)) {
+  if (!part.length) continue;
+  const qOff = query(collection(db, "offers"), where("requestId", "in", part));
+  const snapOff = await getDocs(qOff);
 
-              desiredStarRatings: v.desiredStarRatings ?? null,
-              generalNote: v.generalNote ?? v.note ?? null,
+  snapOff.docs.forEach((d) => {
+    const v = d.data() as AnyObj;
+    offersOut.push({
+      id: d.id,
+      requestId: v.requestId,
+      hotelId: v.hotelId,
+      hotelName: v.hotelName ?? null,
+      totalPrice: Number(v.totalPrice ?? 0),
+      currency: v.currency ?? "TRY",
+      mode: (v.mode ?? "simple") as OfferMode,
+      note: v.note ?? null,
+      status: v.status ?? "sent",
+      guestCounterPrice: v.guestCounterPrice ?? null,
+      createdAt: v.createdAt,
+      updatedAt: v.updatedAt,
+      roomTypeId: v.roomTypeId ?? null,
+      roomTypeName: v.roomTypeName ?? null,
+      roomBreakdown: Array.isArray(v.roomBreakdown) ? v.roomBreakdown : [],
+      cancellationPolicyType: v.cancellationPolicyType ?? null,
+      cancellationPolicyDays: v.cancellationPolicyDays ?? null,
+      priceHistory: Array.isArray(v.priceHistory) ? v.priceHistory : []
+    });
+  });
+}
 
-              nearMe: v.nearMe ?? null
-            };
-          })
-          .filter((r) => r.status !== "deleted");
+const offersVisible = offersOut
+  .filter((o) => !bookedReqIds.has(o.requestId))
+  .filter((o) => !isFinalOfferStatus(o.status));
 
-        const reqMap: Record<string, RequestSummary> = {};
-        reqs.forEach((r) => (reqMap[r.id] = r));
-        const requestIds = reqs.map((r) => r.id);
+const byReq: Record<string, GuestOffer> = {};
+for (const o of offersVisible) {
+  byReq[o.requestId] = pickBetterGuestOffer(byReq[o.requestId], o);
+}
 
-        // 2) offers
-        const offersOut: GuestOffer[] = [];
-        for (const part of chunkArray(requestIds, 10)) {
-          if (!part.length) continue;
-          const qOff = query(collection(db, "offers"), where("requestId", "in", part));
-          const snapOff = await getDocs(qOff);
-          snapOff.docs.forEach((d) => {
-            const v = d.data() as AnyObj;
-            offersOut.push({
-              id: d.id,
-              requestId: v.requestId,
-              hotelId: v.hotelId,
-              hotelName: v.hotelName ?? null,
-              totalPrice: Number(v.totalPrice ?? 0),
-              currency: v.currency ?? "TRY",
-              mode: (v.mode ?? "simple") as OfferMode,
-              note: v.note ?? null,
-              status: v.status ?? "sent",
-              guestCounterPrice: v.guestCounterPrice ?? null,
-              createdAt: v.createdAt,
-              updatedAt: v.updatedAt,
-              roomTypeId: v.roomTypeId ?? null,
-              roomTypeName: v.roomTypeName ?? null,
-              roomBreakdown: Array.isArray(v.roomBreakdown) ? v.roomBreakdown : [],
-              cancellationPolicyType: v.cancellationPolicyType ?? null,
-              cancellationPolicyDays: v.cancellationPolicyDays ?? null,
-              priceHistory: Array.isArray(v.priceHistory) ? v.priceHistory : []
-            });
-          });
-        }
-        offersOut.sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0));
+const offersFinal = Object.values(byReq);
+
+setOffers(offersFinal);
+setRequestsMap(reqMap);
+
+
 
         // 3) hotels map
         const hotelIds = Array.from(new Set(offersOut.map((o) => o.hotelId).filter(Boolean)));
@@ -2115,6 +2218,7 @@ export default function GuestOffersPage() {
 
     load();
   }, [authLoading, profile?.uid, db]);
+
 
   /* ---------------- HOTEL OFFERS: restartAt filter ---------------- */
   const offersFilteredByRestart = useMemo(() => {

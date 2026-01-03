@@ -208,6 +208,20 @@ function normalized(d: Date) {
   n.setHours(0, 0, 0, 0);
   return n;
 }
+function normStatus(s: any) {
+  return String(s || "").trim().toLowerCase();
+}
+
+function isCancelledStatus(s: any) {
+  const x = normStatus(s);
+  return x === "withdrawn" || x === "cancelled" || x === "hotel_cancelled" || x === "canceled";
+}
+
+function isFinalStatus(s: any) {
+  const x = normStatus(s);
+  return x === "accepted" || x === "booked" || x === "paid" || x === "confirmed" || x === "completed";
+}
+
 function diffInDays(a: Date, b: Date) {
   const ms = normalized(a).getTime() - normalized(b).getTime();
   return Math.floor(ms / 86400000);
@@ -533,6 +547,7 @@ function onToastClick(t: ToastItem) {
   // talep detayı modal
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailRequest, setDetailRequest] = useState<RequestItem | null>(null);
+const [bookedRequestIds, setBookedRequestIds] = useState<Set<string>>(() => new Set());
 
   // etiket rotasyonu
   const [tagTick, setTagTick] = useState(0);
@@ -625,6 +640,26 @@ function markCounterSeen(reqId: string) {
     return n;
   });
 }
+useEffect(() => {
+  if (!myUid) return;
+
+  // Not: Eğer booking dokümanında hotelId alanı varsa bunu kullanmak en iyisi.
+  // Yoksa şimdilik hepsini dinleyip requestId set'ine alacağız (küçük sistemde sorun değil).
+  const qBk = query(collection(db, "bookings")); // varsa: query(collection(db,"bookings"), where("hotelId","==",myUid))
+
+  const unsub = onSnapshot(qBk, (snap) => {
+    const s = new Set<string>();
+    snap.docs.forEach((d) => {
+      const v = d.data() as any;
+      if (v?.requestId) s.add(String(v.requestId));
+    });
+    setBookedRequestIds(s);
+    setAcceptedRequestIds(s); // sende zaten bununla filtre var, direkt buna bağla
+  });
+
+  return () => { try { unsub(); } catch {} };
+}, [db, myUid]);
+
 
 
   // sayaç tick
@@ -943,7 +978,8 @@ function findOfferForRequest(reqId: string): ExistingOffer | undefined {
   // o request'e ait tüm offer'ları al
  const list = offers
   .filter((o) => o.requestId === reqId)
-  .filter((o) => String(o.status || "").toLowerCase() !== "withdrawn") // ✅ İPTAL EDİLEN AKTİF SAYILMAZ
+.filter((o) => !isCancelledStatus(o.status))
+.filter((o) => !isFinalStatus(o.status))
   .slice()
   .sort((a, b) => tsMs(b.createdAtMs ?? b.createdAt) - tsMs(a.createdAtMs ?? a.createdAt));
 
@@ -1068,7 +1104,7 @@ function findOfferForRequest(reqId: string): ExistingOffer | undefined {
       // checkin bugün+ileri
       if (!isCheckInTodayOrFuture(r)) return false;
       // rezervasyona dönmüşse kaldır
-      if (acceptedRequestIds.has(r.id)) return false;
+if (bookedRequestIds.has(r.id)) return false;
 
       if (districtFilter !== "all" && r.district !== districtFilter) return false;
 

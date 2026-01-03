@@ -149,6 +149,20 @@ function safeStr(v: any, fb = "Belirtilmemiş") {
   return s.length ? s : fb;
 }
 
+function normStatus(s: any) {
+  return String(s || "").trim().toLowerCase();
+}
+
+function isCancelledStatus(s: any) {
+  const x = normStatus(s);
+  return x === "withdrawn" || x === "cancelled" || x === "hotel_cancelled" || x === "canceled";
+}
+
+function isFinalStatus(s: any) {
+  const x = normStatus(s);
+  return x === "accepted" || x === "booked" || x === "paid" || x === "confirmed" || x === "completed";
+}
+
 function toDateMaybe(ts: any): Date | null {
   try {
     if (!ts) return null;
@@ -370,6 +384,13 @@ function pickBetterOffer(a: HotelOffer | undefined, b: HotelOffer | undefined): 
   const [offerByRequest, setOfferByRequest] = useState<Record<string, HotelOffer>>({});
 
   const [hotelRoomTypes, setHotelRoomTypes] = useState<any[]>([]);
+  const [bookedRequestIds, setBookedRequestIds] = useState<Set<string>>(() => new Set());
+
+// ✅ Bu request başka otel tarafından alındı mı? (booking map)
+const [bookingByRequestId, setBookingByRequestId] = useState<Record<string, any>>({});
+
+// ✅ 30sn kapanış sayaçları (reqId -> kapanışTimeMs)
+const [closingReqs, setClosingReqs] = useState<Record<string, number>>({});
 
   const [qText, setQText] = useState("");
   const [onlyUrgent, setOnlyUrgent] = useState(false);
@@ -403,6 +424,32 @@ function pickBetterOffer(a: HotelOffer | undefined, b: HotelOffer | undefined): 
       if (raw) setPinnedIds(new Set(JSON.parse(raw)));
     } catch {}
   }, [pinKey]);
+
+  useEffect(() => {
+  if (!profile?.uid) return;
+
+  const qBk = query(collection(db, "bookings"), where("hotelId", "==", profile.uid));
+  const unsub = onSnapshot(qBk, (snap) => {
+    const s = new Set<string>();
+    snap.docs.forEach((d) => {
+      const v = d.data() as any;
+      const st = String(v?.status || "active").toLowerCase();
+      if (st === "cancelled" || st === "deleted") return;
+      if (v?.requestId) s.add(String(v.requestId));
+    });
+    setBookedRequestIds(s);
+  });
+
+  return () => { try { unsub(); } catch {} };
+}, [db, profile?.uid]);
+
+function normStatus(s: any) {
+  return String(s || "").trim().toLowerCase();
+}
+function bookingIsActive(b: any) {
+  const st = normStatus(b?.status || "active");
+  return st !== "cancelled" && st !== "deleted";
+}
 
   useEffect(() => {
     try {
@@ -453,6 +500,44 @@ function pickBetterOffer(a: HotelOffer | undefined, b: HotelOffer | undefined): 
       return n;
     });
   }
+  useEffect(() => {
+  if (!profile?.uid) return;
+
+  const myHotelId = profile.uid;
+
+  // bookingByRequestId içindeki her request için:
+  // - booking hotelId benim değilse → 30 sn sonra UI’dan kaldır
+  Object.entries(bookingByRequestId || {}).forEach(([reqId, b]) => {
+    if (!b) return;
+    if (!bookingIsActive(b)) return;
+
+    const bookedHotelId = String(b.hotelId || "");
+    if (!bookedHotelId || bookedHotelId === myHotelId) return; // benim booking’imse burada iş yok
+
+    // zaten countdown başlatıldıysa tekrar başlatma
+    if (closingReqs[reqId]) return;
+
+    const closeAt = Date.now() + 30_000; // 30sn
+    setClosingReqs((prev) => ({ ...prev, [reqId]: closeAt }));
+
+    window.setTimeout(() => {
+      // 30sn sonra listeden çıkar
+      setOffers((prev) => prev.filter((o) => o.requestId !== reqId));
+      setOfferByRequest((prev) => {
+        const copy = { ...prev };
+        delete copy[reqId];
+        return copy;
+      });
+      setClosingReqs((prev) => {
+        const copy = { ...prev };
+        delete copy[reqId];
+        return copy;
+      });
+    }, 30_000);
+  });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [bookingByRequestId, profile?.uid]);
+
 
   useEffect(() => {
     let alive = true;
@@ -493,6 +578,8 @@ function pickBetterOffer(a: HotelOffer | undefined, b: HotelOffer | undefined): 
             guestCounterAt: v.guestCounterAt ?? null,
             roomBreakdown: Array.isArray(v.roomBreakdown) ? v.roomBreakdown : [],
             priceHistory: Array.isArray(v.priceHistory) ? v.priceHistory : []
+ 
+
           };
         });
 
@@ -520,6 +607,27 @@ for (const o of offersData) {
 }
 setOfferByRequest(map);
 
+async function fetchBookingsForRequestIds(reqIds: string[]) {
+  const out: Record<string, any> = {};
+  const uniq = Array.from(new Set(reqIds.filter(Boolean)));
+
+  // Firestore "in" max 10 → chunk
+  for (let i = 0; i < uniq.length; i += 10) {
+    const part = uniq.slice(i, i + 10);
+    const qBk = query(collection(db, "bookings"), where("requestId", "in", part));
+    const snap = await getDocs(qBk);
+
+    snap.docs.forEach((d) => {
+      const v = d.data() as any;
+      if (!v?.requestId) return;
+      if (!bookingIsActive(v)) return;
+      // aynı requestId için birden fazla booking olmasın diye en yeni olanı seç
+      out[String(v.requestId)] = { id: d.id, ...v };
+    });
+  }
+
+  return out;
+}
 
 
         // requests last 300
@@ -581,9 +689,20 @@ setOfferByRequest(map);
 
         if (!alive) return;
 
-        setOffers(offersData);
-        setOfferByRequest(map);
-        setRequests(reqData);
+ setOffers(offersData);
+setOfferByRequest(map);
+setRequests(reqData);
+
+// ✅ Bu sayfadaki requestId'ler için booking'leri çek (başkası aldı mı?)
+try {
+  const reqIds = reqData.map((r) => r.id);
+  const bkMap = await fetchBookingsForRequestIds(reqIds);
+  setBookingByRequestId(bkMap);
+} catch (e) {
+  console.warn("booking fetch warning:", e);
+}
+
+
       } catch (e) {
         console.error(e);
         if (alive) showToast("err", "Veriler yüklenirken hata oluştu.");
@@ -655,12 +774,19 @@ setOfferByRequest(map);
     const t = qText.trim().toLowerCase();
 
     const arr = requests.filter((r) => {
-      const offer = offerByRequest[r.id];
+    const offer = offerByRequest[r.id];
+if (!offer) return false;
+if (String(offer.status) === "withdrawn") return false;
+if (bookedRequestIds.has(r.id)) return false;
+if (isFinalStatus(offer.status)) return false;
+
 
       // 🔥 En önemli fix: teklif yoksa ASLA gösterme
       if (!offer) return false;
       // otel iptal ettiyse ve istersen gizle:
-if (String(offer.status) === "withdrawn") return false;
+const FINAL = new Set(["accepted", "booked", "paid", "confirmed", "completed"]);
+
+if (FINAL.has(String(offer.status || "").toLowerCase())) return false;
 
 
       // Süresi dolan talep gizle (opsiyon)
@@ -753,12 +879,12 @@ async function cancelOffer(offer: HotelOffer) {
   if (!ok) return;
 
   try {
-    await updateDoc(doc(db, "offers", offer.id), {
-      status: "withdrawn",
-      withdrawnAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      updatedAtMs: Date.now()
-    });
+ await updateDoc(doc(db, "offers", offer.id), {
+  status: "withdrawn",
+  withdrawnAt: serverTimestamp(),
+  updatedAt: serverTimestamp(),
+  updatedAtMs: Date.now()
+});
 
     // UI'da anında düşsün
     setOffers((prev) => prev.filter((x) => x.id !== offer.id));
@@ -776,6 +902,7 @@ async function cancelOffer(offer: HotelOffer) {
     showToast("err", "Teklif iptal edilemedi.");
   }
 }
+
 
 
 
@@ -886,9 +1013,15 @@ async function cancelOffer(offer: HotelOffer) {
 
             {filteredRequests.map((r) => {
               const offer = offerByRequest[r.id]; // artık kesin var
+              const bk = bookingByRequestId[r.id];
+const isTakenByOther = bk && bookingIsActive(bk) && String(bk.hotelId || "") !== String(profile?.uid || "");
+const closeAt = closingReqs[r.id] || 0;
+const leftSec = closeAt ? Math.max(0, Math.ceil((closeAt - Date.now()) / 1000)) : 0;
+
               const nights = calcNights(r.checkIn, r.checkOut);
               const u = urgencyTag(r);
               const left = timeLeftLabel(r);
+              
 
               const pinned = pinnedIds.has(r.id);
 
@@ -989,6 +1122,12 @@ async function cancelOffer(offer: HotelOffer) {
                       <p className="text-[0.7rem] text-slate-400">
                         Durum: {statusLabel(offer.status)} • Gönderim: {fmtDateTimeTR(offer.createdAt)}
                       </p>
+                      {isTakenByOther ? (
+  <span className="inline-flex items-center rounded-full border border-red-500/50 bg-red-500/10 px-2 py-0.5 text-[0.65rem] text-red-200">
+    Bu talep başka otel tarafından alındı • {leftSec}s
+  </span>
+) : null}
+
                       {offer.updatedAt ? <p className="text-[0.7rem] text-slate-500">Güncelleme: {fmtDateTimeTR(offer.updatedAt)}</p> : null}
                       {offer.guestCounterPrice ? (
                         <p className="text-[0.7rem] text-amber-300">Karşı teklif: {money(safeNum(offer.guestCounterPrice, 0), offer.currency)}</p>
